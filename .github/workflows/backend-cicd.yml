@@ -138,14 +138,31 @@ jobs:
           REMOTE_SCRIPT=${REMOTE_SCRIPT//FIREBASE_B64_PLACEHOLDER/$FIREBASE_JSON_B64}
           printf '%s' "$REMOTE_SCRIPT" > /tmp/ssm-deploy.sh
 
+          # Transfer the script as Base64 so SSM receives real newlines and
+          # multiline secrets cannot corrupt the shell script.
+          SCRIPT_B64=$(base64 -w 0 /tmp/ssm-deploy.sh)
+          COMMANDS=$(jq -n --arg script "$SCRIPT_B64" '[
+            "echo \($script) | base64 -d > /tmp/nandhas-deploy.sh",
+            "chmod 700 /tmp/nandhas-deploy.sh",
+            "bash /tmp/nandhas-deploy.sh"
+          ]')
+
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$EC2_INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
             --comment "Nandhas backend deployment $GITHUB_SHA" \
-            --parameters "commands=$(jq -Rs '[.]' < /tmp/ssm-deploy.sh)" \
+            --parameters "commands=$COMMANDS" \
             --query 'Command.CommandId' --output text)
 
           echo "SSM command submitted: $COMMAND_ID"
+          set +e
           aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$EC2_INSTANCE_ID"
+          WAIT_STATUS=$?
+          set -e
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$EC2_INSTANCE_ID" \
+            --query '{Status:Status,ResponseCode:ResponseCode,Output:StandardOutputContent,Error:StandardErrorContent}' \
+            --output json
           STATUS=$(aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$EC2_INSTANCE_ID" --query 'Status' --output text)
           test "$STATUS" = "Success"
