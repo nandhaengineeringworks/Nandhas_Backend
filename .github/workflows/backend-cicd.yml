@@ -130,7 +130,13 @@ jobs:
           echo "Backend deployment successful"
           REMOTE_SCRIPT
 
-          sed -i "s|IMAGE_PLACEHOLDER|$IMAGE|; s|REGISTRY_PLACEHOLDER|${{ steps.ecr.outputs.registry }}|; s|REGION_PLACEHOLDER|$AWS_REGION|; s|ENV_B64_PLACEHOLDER|$RUNTIME_ENV_B64|; s|FIREBASE_B64_PLACEHOLDER|$FIREBASE_JSON_B64|" /tmp/ssm-deploy.sh
+          REMOTE_SCRIPT=$(< /tmp/ssm-deploy.sh)
+          REMOTE_SCRIPT=${REMOTE_SCRIPT//IMAGE_PLACEHOLDER/$IMAGE}
+          REMOTE_SCRIPT=${REMOTE_SCRIPT//REGISTRY_PLACEHOLDER/${{ steps.ecr.outputs.registry }}}
+          REMOTE_SCRIPT=${REMOTE_SCRIPT//REGION_PLACEHOLDER/$AWS_REGION}
+          REMOTE_SCRIPT=${REMOTE_SCRIPT//ENV_B64_PLACEHOLDER/$RUNTIME_ENV_B64}
+          REMOTE_SCRIPT=${REMOTE_SCRIPT//FIREBASE_B64_PLACEHOLDER/$FIREBASE_JSON_B64}
+          printf '%s' "$REMOTE_SCRIPT" > /tmp/ssm-deploy.sh
 
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$EC2_INSTANCE_ID" \
