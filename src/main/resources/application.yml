@@ -1,0 +1,44 @@
+spring:
+  config:
+    import: optional:file:.env[.properties],optional:file:backend-api/.env[.properties]
+  application:
+    name: backend-api
+  profiles:
+    active: dev
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 60MB
+
+server:
+  port: 8080
+  servlet:
+    context-path: /
+
+app:
+  jwt:
+    secret: ${JWT_SECRET:4c6971756964537465656c45636f6d6d6572636553757065725365637265744b6579323032362140232425}
+    expiration-ms: 86400000 # 24 hours
+  storage:
+    type: ${STORAGE_TYPE:local} # 'local' or 's3'
+    local-dir: ./uploads
+    base-url: http://localhost:8080/uploads
+  aws:
+    s3:
+      bucket-name: nandhas-media-bucket
+      region: ${AWS_REGION:ap-south-2}
+      access-key: ""
+      secret-key: ""
+      cloudfront-domain: ""
+  firebase:
+    enabled: ${FIREBASE_ENABLED:false}
+  mail:
+    from: sales@machinery-interior.com
+    admin-notification-email: admin@machinery-interior.com
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operationsSorter: method

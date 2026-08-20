@@ -1,0 +1,9 @@
+target/
+.env
+.env.*
+!.env.example
+uploads/
+logs/
+*.log
+firebase-service-account*.json
+*-firebase-adminsdk-*.json
