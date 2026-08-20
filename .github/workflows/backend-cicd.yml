@@ -153,12 +153,17 @@ CONTAINER_ID=$(sudo docker run -d --name nandhas-backend --restart unless-stoppe
 echo "Container started: $CONTAINER_ID"
 
 # Brief pause – if the JVM crashes at startup it will have exited by now
-sleep 8
+sleep 10
 
 if ! sudo docker ps --format '{{.Names}}' | grep -q 'nandhas-backend'; then
-  echo "❌ Container exited immediately after start. Docker logs:"
-  sudo docker logs "$CONTAINER_ID" 2>&1 || true
-  sudo docker ps -a --filter "name=nandhas-backend"
+  echo "❌ Container exited immediately after start."
+  echo "--- Container state ---"
+  sudo docker inspect nandhas-backend \
+    --format='Status={{.State.Status}} ExitCode={{.State.ExitCode}} Error={{.State.Error}}' 2>/dev/null || true
+  echo "--- All containers ---"
+  sudo docker ps -a
+  echo "--- Container logs (last 200 lines) ---"
+  sudo docker logs --tail 200 "$CONTAINER_ID" 2>&1 || true
   exit 1
 fi
 
@@ -176,8 +181,12 @@ for i in $(seq 1 25); do
 done
 
 if [ "$HEALTHY" -ne 1 ]; then
-  echo "❌ Backend health check failed after 25 attempts. Container logs:"
-  sudo docker logs --tail 150 nandhas-backend 2>&1 || true
+  echo "❌ Backend health check failed after 25 attempts."
+  echo "--- Container state ---"
+  sudo docker inspect nandhas-backend \
+    --format='Status={{.State.Status}} ExitCode={{.State.ExitCode}} Error={{.State.Error}}' 2>/dev/null || true
+  echo "--- Container logs (last 200 lines) ---"
+  sudo docker logs --tail 200 nandhas-backend 2>&1 || true
   exit 1
 fi
 
