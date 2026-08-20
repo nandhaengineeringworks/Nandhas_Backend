@@ -124,8 +124,25 @@ jobs:
             -p 8080:8080 \
             -v /opt/nandhas/uploads:/app/uploads \
             "$IMAGE"
-          sleep 15
-          curl --fail --retry 5 --retry-delay 3 http://127.0.0.1:8080/api/products?page=0\&size=1 >/dev/null
+          
+          echo "Waiting for Spring Boot backend to become healthy on port 8080..."
+          HEALTHY=0
+          for i in {1..20}; do
+            if curl -s -f http://127.0.0.1:8080/api/products?page=0\&size=1 >/dev/null 2>&1; then
+              echo "✓ Backend API is UP and responding (attempt $i)"
+              HEALTHY=1
+              break
+            fi
+            echo "Waiting for backend startup... (attempt $i/20)"
+            sleep 5
+          done
+
+          if [ $HEALTHY -ne 1 ]; then
+            echo "❌ Backend health check failed. Printing container logs:"
+            sudo docker logs --tail 100 nandhas-backend
+            exit 1
+          fi
+
           sudo docker image prune -af --filter "until=168h"
           echo "Backend deployment successful"
           REMOTE_SCRIPT
