@@ -94,6 +94,17 @@ public class AuthController {
             Customer customer;
             if (existingCustomerOpt.isPresent()) {
                 customer = existingCustomerOpt.get();
+                
+                // If the existing customer has the default placeholder name, prompt for completion or update it
+                if (customer.getFullName() == null || customer.getFullName().trim().isEmpty() || customer.getFullName().equals("Customer")) {
+                    if (finalFullName == null || finalFullName.equals("Customer")) {
+                        return ResponseEntity.status(HttpStatus.ACCEPTED).body(ApiResponse.error("PROFILE_INCOMPLETE"));
+                    } else {
+                        // Update their name now that they have provided it
+                        customer.setFullName(finalFullName);
+                        customer = customerRepository.save(customer);
+                    }
+                }
             } else {
                 // Customer does not exist in backend
                 if (finalFullName == null || finalFullName.equals("Customer")) {
