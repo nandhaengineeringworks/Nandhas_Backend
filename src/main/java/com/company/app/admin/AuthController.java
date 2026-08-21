@@ -58,6 +58,45 @@ public class AuthController {
         return ResponseEntity.ok(ApiResponse.success("Login successful", response));
     }
 
+    @GetMapping("/check-phone")
+    @Operation(summary = "Check if customer mobile number exists in database")
+    public ResponseEntity<ApiResponse<PhoneCheckResponseDTO>> checkPhone(@RequestParam String phone) {
+        if (phone == null || phone.trim().isEmpty()) {
+            return ResponseEntity.badRequest().body(ApiResponse.error("Phone number is required"));
+        }
+
+        String raw = phone.trim();
+        String formatted = raw;
+        if (!formatted.startsWith("+") && formatted.length() == 10) {
+            formatted = "+91" + formatted;
+        }
+
+        java.util.Optional<Customer> customerOpt = customerRepository.findByPhone(formatted);
+        if (customerOpt.isEmpty() && formatted.startsWith("+91")) {
+            customerOpt = customerRepository.findByPhone(formatted.substring(3));
+        }
+        if (customerOpt.isEmpty()) {
+            customerOpt = customerRepository.findByPhone(raw);
+        }
+
+        if (customerOpt.isPresent()) {
+            Customer customer = customerOpt.get();
+            PhoneCheckResponseDTO dto = PhoneCheckResponseDTO.builder()
+                    .exists(true)
+                    .fullName(customer.getFullName())
+                    .email(customer.getEmail())
+                    .build();
+            return ResponseEntity.ok(ApiResponse.success("Account found", dto));
+        }
+
+        PhoneCheckResponseDTO dto = PhoneCheckResponseDTO.builder()
+                .exists(false)
+                .fullName(null)
+                .email(null)
+                .build();
+        return ResponseEntity.ok(ApiResponse.success("Account not found", dto));
+    }
+
     @PostMapping("/firebase")
     @Operation(summary = "Authenticate customer using Firebase ID Token")
     public ResponseEntity<ApiResponse<AuthResponseDTO>> authenticateFirebase(
@@ -80,43 +119,49 @@ public class AuthController {
                 return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.error("Phone number missing from Firebase token"));
             }
 
-            // Extract optional fullName from the request body
+            // Extract optional fullName and email from the request body
             String fullName = "Customer";
             if (payload != null && payload.containsKey("fullName") && payload.get("fullName") != null && !payload.get("fullName").trim().isEmpty()) {
                 fullName = payload.get("fullName").trim();
             }
 
+            String email = null;
+            if (payload != null && payload.containsKey("email") && payload.get("email") != null && !payload.get("email").trim().isEmpty()) {
+                email = payload.get("email").trim().toLowerCase();
+            }
+
             final String finalFullName = fullName;
 
-            // Find customer
+            // Find customer by Firebase UID or Phone
             java.util.Optional<Customer> existingCustomerOpt = customerRepository.findByFirebaseUid(uid);
+            if (existingCustomerOpt.isEmpty()) {
+                existingCustomerOpt = customerRepository.findByPhone(phone);
+            }
             
             Customer customer;
             if (existingCustomerOpt.isPresent()) {
                 customer = existingCustomerOpt.get();
+                customer.setFirebaseUid(uid);
+                boolean changed = false;
                 
-                // If the existing customer has the default placeholder name, prompt for completion or update it
-                if (customer.getFullName() == null || customer.getFullName().trim().isEmpty() || customer.getFullName().equals("Customer")) {
-                    if (finalFullName == null || finalFullName.equals("Customer")) {
-                        return ResponseEntity.status(HttpStatus.ACCEPTED).body(ApiResponse.error("PROFILE_INCOMPLETE"));
-                    } else {
-                        // Update their name now that they have provided it
-                        customer.setFullName(finalFullName);
-                        customer = customerRepository.save(customer);
-                    }
+                if (finalFullName != null && !finalFullName.equals("Customer") && !finalFullName.equals(customer.getFullName())) {
+                    customer.setFullName(finalFullName);
+                    changed = true;
+                }
+                if (email != null && !email.equals(customer.getEmail())) {
+                    customer.setEmail(email);
+                    changed = true;
+                }
+                if (changed) {
+                    customer = customerRepository.save(customer);
                 }
             } else {
-                // Customer does not exist in backend
-                if (finalFullName == null || finalFullName.equals("Customer")) {
-                    // Step 12: Existing Firebase user but missing backend customer -> require profile completion
-                    return ResponseEntity.status(HttpStatus.ACCEPTED).body(ApiResponse.error("PROFILE_INCOMPLETE"));
-                }
-                
                 // Create new customer
                 Customer newCustomer = Customer.builder()
                         .firebaseUid(uid)
                         .phone(phone)
                         .fullName(finalFullName)
+                        .email(email)
                         .build();
                 customer = customerRepository.save(newCustomer);
             }
@@ -134,7 +179,7 @@ public class AuthController {
                     .token(jwt)
                     .tokenType("Bearer")
                     .id(customer.getId())
-                    .email(customer.getPhone()) // For customers, we use phone as the unique identifier
+                    .email(customer.getEmail() != null ? customer.getEmail() : customer.getPhone())
                     .fullName(customer.getFullName())
                     .role("ROLE_CUSTOMER")
                     .build();

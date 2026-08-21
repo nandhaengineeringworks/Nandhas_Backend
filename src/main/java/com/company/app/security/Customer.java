@@ -31,6 +31,9 @@ public class Customer {
     @Column(nullable = false, unique = true)
     private String phone;
 
+    @Column(nullable = true)
+    private String email;
+
     @Builder.Default
     @Column(nullable = false)
     private Boolean isActive = true;
