@@ -51,18 +51,23 @@ jobs:
           echo "=== Downloading SQL dump via presigned URL ==="
           curl -fSL "${PRESIGNED_URL}" -o /tmp/nandhas-rds-migration.sql
 
-          echo "=== Converting encoding if needed ==="
-          if file /tmp/nandhas-rds-migration.sql | grep -qi "UTF-16"; then
-            iconv -f UTF-16LE -t UTF-8 /tmp/nandhas-rds-migration.sql > /tmp/converted.sql
+          echo "=== Converting encoding to UTF-8 (force) ==="
+          # Always attempt to strip BOM and convert from UTF-16LE
+          # iconv will fail gracefully if already UTF-8, then we use the original
+          if iconv -f UTF-16LE -t UTF-8 /tmp/nandhas-rds-migration.sql > /tmp/converted.sql 2>/dev/null; then
             mv /tmp/converted.sql /tmp/nandhas-rds-migration.sql
-            echo "Converted UTF-16 to UTF-8."
+            echo "Converted UTF-16LE to UTF-8."
+          else
+            # Try stripping BOM from UTF-8 with BOM
+            sed -i '1s/^\xEF\xBB\xBF//' /tmp/nandhas-rds-migration.sql
+            echo "File is already UTF-8 (or converted with BOM strip)."
           fi
 
           echo "=== Starting MySQL import via Docker ==="
           docker run --rm \
             -v /tmp/nandhas-rds-migration.sql:/tmp/dump.sql:ro \
             mysql:8 \
-            sh -c "mysql -h '${DB_HOST}' -P '${DB_PORT}' -u '${DB_USERNAME}' -p'${DB_PASSWORD}' '${DB_NAME}' < /tmp/dump.sql"
+            sh -c "mysql --binary-mode=1 -h '${DB_HOST}' -P '${DB_PORT}' -u '${DB_USERNAME}' -p'${DB_PASSWORD}' '${DB_NAME}' < /tmp/dump.sql"
 
           echo "=== Import complete! Cleaning up ==="
           rm /tmp/nandhas-rds-migration.sql
