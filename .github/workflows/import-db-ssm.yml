@@ -50,6 +50,9 @@ jobs:
             mv /tmp/converted.sql /tmp/nandhas-rds-migration.sql
           fi
 
+          echo "Installing mysql client..."
+          sudo dnf install -y mariadb105
+          
           echo "Executing SQL against RDS..."
           mysql -h "${DB_HOST}" -P "${DB_PORT}" -u "${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_NAME}" < /tmp/nandhas-rds-migration.sql
           
