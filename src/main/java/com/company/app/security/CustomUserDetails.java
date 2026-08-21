@@ -1,6 +1,7 @@
 package com.company.app.security;
 
 import com.company.app.admin.AdminUser;
+import com.company.app.security.Customer;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import org.springframework.security.core.GrantedAuthority;
@@ -24,11 +25,22 @@ public class CustomUserDetails implements UserDetails {
     public static CustomUserDetails create(AdminUser adminUser) {
         return new CustomUserDetails(
                 adminUser.getId(),
-                adminUser.getEmail(),
+                adminUser.getEmail(), // username is email
                 adminUser.getPasswordHash(),
                 adminUser.getFullName(),
                 Collections.singletonList(new SimpleGrantedAuthority(adminUser.getRole().name())),
                 Boolean.TRUE.equals(adminUser.getIsActive())
+        );
+    }
+
+    public static CustomUserDetails create(Customer customer) {
+        return new CustomUserDetails(
+                customer.getId(),
+                customer.getPhone(), // username is phone
+                "", // No password for Firebase users
+                customer.getFullName(),
+                Collections.singletonList(new SimpleGrantedAuthority("ROLE_CUSTOMER")),
+                Boolean.TRUE.equals(customer.getIsActive())
         );
     }
 

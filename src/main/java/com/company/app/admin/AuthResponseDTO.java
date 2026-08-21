@@ -16,5 +16,5 @@ public class AuthResponseDTO {
     private Long id;
     private String email;
     private String fullName;
-    private AdminRole role;
+    private String role; // Changed from AdminRole to String to support ROLE_CUSTOMER
 }

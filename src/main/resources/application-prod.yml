@@ -18,6 +18,8 @@ spring:
         format_sql: false
 
 app:
+  firebase:
+    credentials-file: /opt/nandhas/secrets/firebase-service-account.json
   storage:
     type: ${STORAGE_TYPE:s3}
   aws:

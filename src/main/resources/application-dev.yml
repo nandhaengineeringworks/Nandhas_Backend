@@ -13,6 +13,11 @@ spring:
         dialect: org.hibernate.dialect.MySQLDialect
         format_sql: false
 
+app:
+  firebase:
+    enabled: true
+    credentials-file: firebase-service-account.json
+
 logging:
   level:
     com.company.app: INFO
