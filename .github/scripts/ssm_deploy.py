@@ -2,13 +2,12 @@
 """
 Generate and execute the Nandhas backend SSM deployment.
 
-This script is called by GitHub Actions and:
-1. Reads deployment parameters from environment variables.
-2. Generates the remote EC2 deployment bash script safely (no heredocs).
-3. Base64-encodes it and sends it via AWS SSM.
-4. Polls until completion.
-5. Streams stdout/stderr back to the Actions log.
-6. Exits non-zero if the deployment failed.
+Design: the shell script template uses ##MARKER## tokens (not $variables)
+for Python-side substitution.  Every bare $ in the template is a real shell
+$ that will be evaluated on the EC2 instance — Python never touches them.
+
+This avoids the string.Template 'Invalid placeholder' error that occurs when
+shell constructs like  $();  ${VAR};  grep '^pattern$'  appear in the script.
 
 NO secret values are ever printed to stdout/stderr.
 """
@@ -19,7 +18,7 @@ import json
 import base64
 import subprocess
 import time
-import string
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -31,16 +30,22 @@ def env(name, required=True, default=""):
     return val
 
 
-def aws(*args, capture=True, check=True):
-    cmd = ["aws"] + list(args)
-    result = subprocess.run(cmd, capture_output=capture, text=True)
-    if check and result.returncode != 0:
+def aws_cli(*args):
+    """Run an aws CLI command and return stripped stdout. Exits on failure."""
+    result = subprocess.run(["aws"] + list(args), capture_output=True, text=True)
+    if result.returncode != 0:
         print(result.stderr, file=sys.stderr)
         sys.exit(result.returncode)
-    return result.stdout.strip() if capture else None
+    return result.stdout.strip()
 
 
-# ── Read parameters ────────────────────────────────────────────────────────────
+def aws_query(*args):
+    """Run aws CLI and return stdout (non-fatal). Used for status polling."""
+    result = subprocess.run(["aws"] + list(args), capture_output=True, text=True)
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+# ── Read parameters from GitHub Actions environment ───────────────────────────
 
 IMAGE_URI       = env("IMAGE_URI")
 ECR_REGISTRY    = env("ECR_REGISTRY")
@@ -50,34 +55,38 @@ RUNTIME_ENV_B64 = env("RUNTIME_ENV_B64")
 FIREBASE_B64    = env("FIREBASE_B64", required=False, default="")
 GH_SHA          = env("GH_SHA", required=False, default="unknown")
 
-# ── Build the remote bash script ──────────────────────────────────────────────
-# We use string.Template ($var syntax) so that bash ${VAR} and {.Names}
-# docker format strings are NOT touched by Python's substitution.
-# Only $image, $registry, $region, $env_b64, $firebase_b64 are substituted.
+
+# ── Shell script template ─────────────────────────────────────────────────────
+# Tokens ##IMAGE##, ##REGISTRY##, ##REGION##, ##ENV_B64##, ##FIREBASE_B64##
+# are substituted by Python below using plain str.replace().
+#
+# Every $ in this string is a SHELL variable / command-substitution / regex
+# anchor that must remain intact and be evaluated on EC2 — Python never sees
+# them as template placeholders.
 
 SCRIPT_TEMPLATE = r"""#!/usr/bin/env bash
 set -euo pipefail
 
-IMAGE='$image'
-REGISTRY='$registry'
-REGION='$region'
-ENV_B64='$env_b64'
-FIREBASE_B64='$firebase_b64'
+IMAGE='##IMAGE##'
+REGISTRY='##REGISTRY##'
+REGION='##REGION##'
+ENV_B64='##ENV_B64##'
+FIREBASE_B64='##FIREBASE_B64##'
 
 echo "=== Nandhas Backend Deployment ==="
-echo "Image  : $$IMAGE"
-echo "Region : $$REGION"
+echo "Image  : $IMAGE"
+echo "Region : $REGION"
 
 # ── Create required directories ───────────────────────────────────────────────
 sudo mkdir -p /opt/nandhas/secrets /opt/nandhas/uploads
 
 # ── Write env file (secrets decoded on EC2, never printed) ───────────────────
-printf '%s' "$$ENV_B64" | base64 -d | sudo tee /opt/nandhas/backend.env > /dev/null
+printf '%s' "$ENV_B64" | base64 -d | sudo tee /opt/nandhas/backend.env > /dev/null
 echo "backend.env written"
 
 # ── Write Firebase credentials ────────────────────────────────────────────────
-if [ -n "$$FIREBASE_B64" ]; then
-  printf '%s' "$$FIREBASE_B64" | base64 -d | \
+if [ -n "$FIREBASE_B64" ]; then
+  printf '%s' "$FIREBASE_B64" | base64 -d | \
     sudo tee /opt/nandhas/secrets/firebase-service-account.json > /dev/null
   echo "Firebase credentials written"
 else
@@ -91,15 +100,15 @@ sudo chmod 644 /opt/nandhas/backend.env \
                /opt/nandhas/secrets/firebase-service-account.json
 sudo chmod -R 777 /opt/nandhas/uploads
 
-# ── ECR login via EC2 IAM role (no static AWS keys needed) ───────────────────
+# ── ECR login using EC2 IAM role (no static AWS keys) ────────────────────────
 echo "Logging Docker into ECR..."
-aws ecr get-login-password --region "$$REGION" | \
-  sudo docker login --username AWS --password-stdin "$$REGISTRY"
+aws ecr get-login-password --region "$REGION" | \
+  sudo docker login --username AWS --password-stdin "$REGISTRY"
 echo "ECR login OK"
 
 # ── Pull the exact image built by CI ─────────────────────────────────────────
-echo "Pulling: $$IMAGE"
-sudo docker pull "$$IMAGE"
+echo "Pulling: $IMAGE"
+sudo docker pull "$IMAGE"
 echo "Pull OK"
 
 # ── Stop and remove previous container ────────────────────────────────────────
@@ -118,8 +127,8 @@ CONTAINER_ID=$(sudo docker run -d \
   -p 8080:8080 \
   -v /opt/nandhas/secrets:/opt/nandhas/secrets:ro \
   -v /opt/nandhas/uploads:/app/uploads \
-  "$$IMAGE")
-echo "Container started: $$CONTAINER_ID"
+  "$IMAGE")
+echo "Container started: $CONTAINER_ID"
 
 # ── Wait for JVM to initialize ────────────────────────────────────────────────
 echo "Waiting 15s for Spring Boot to initialize..."
@@ -135,26 +144,26 @@ if ! sudo docker ps --format '{{.Names}}' | grep -q '^nandhas-backend$'; then
   echo "--- all containers ---"
   sudo docker ps -a
   echo "--- container logs (300 lines, NO secrets printed) ---"
-  sudo docker logs --tail 300 "$$CONTAINER_ID" 2>&1 || true
+  sudo docker logs --tail 300 "$CONTAINER_ID" 2>&1 || true
   exit 1
 fi
 
-# ── HTTP health-check loop (25 x 5s = 125s max) ──────────────────────────────
+# ── HTTP health-check loop (25 x 5 s = 125 s max) ────────────────────────────
 echo "Container running. Health-checking HTTP on port 8080..."
 HEALTHY=0
 for i in $(seq 1 25); do
   CODE=$(curl -s -o /dev/null -w '%{http_code}' \
     'http://127.0.0.1:8080/api/products?page=0&size=1' || echo '000')
-  if [ "$$CODE" = "200" ] || [ "$$CODE" = "401" ] || [ "$$CODE" = "403" ]; then
-    echo "Backend responsive (HTTP $$CODE) on attempt $$i"
+  if [ "$CODE" = "200" ] || [ "$CODE" = "401" ] || [ "$CODE" = "403" ]; then
+    echo "Backend responsive (HTTP $CODE) on attempt $i"
     HEALTHY=1
     break
   fi
-  echo "Attempt $$i/25: HTTP $$CODE - retrying in 5s..."
+  echo "Attempt $i/25: HTTP $CODE - retrying in 5s..."
   sleep 5
 done
 
-if [ "$$HEALTHY" -ne 1 ]; then
+if [ "$HEALTHY" -ne 1 ]; then
   echo "ERROR: Health check failed after 25 attempts."
   echo "--- container state ---"
   sudo docker inspect nandhas-backend \
@@ -170,16 +179,25 @@ sudo docker image prune -af --filter "until=168h" 2>/dev/null || true
 echo "Deployment completed successfully!"
 """
 
-# ── Substitute only our placeholders (not bash variables) ─────────────────────
-# string.Template uses $var syntax; $$ in the template becomes $ in output.
-tmpl = string.Template(SCRIPT_TEMPLATE)
-deploy_script = tmpl.substitute(
-    image=IMAGE_URI,
-    registry=ECR_REGISTRY,
-    region=AWS_REGION,
-    env_b64=RUNTIME_ENV_B64,
-    firebase_b64=FIREBASE_B64,
+# ── Substitute ##MARKER## tokens with real values ─────────────────────────────
+# str.replace() is used deliberately — it never inspects $ characters at all,
+# so shell variables, command substitutions and regex anchors are untouched.
+
+deploy_script = (
+    SCRIPT_TEMPLATE
+    .replace("##IMAGE##",       IMAGE_URI)
+    .replace("##REGISTRY##",    ECR_REGISTRY)
+    .replace("##REGION##",      AWS_REGION)
+    .replace("##ENV_B64##",     RUNTIME_ENV_B64)
+    .replace("##FIREBASE_B64##", FIREBASE_B64)
 )
+
+# Quick sanity-check: no unresolved markers should remain
+for marker in ("##IMAGE##", "##REGISTRY##", "##REGION##",
+               "##ENV_B64##", "##FIREBASE_B64##"):
+    if marker in deploy_script:
+        print(f"ERROR: Marker {marker} was not replaced", file=sys.stderr)
+        sys.exit(1)
 
 # ── Write to disk ─────────────────────────────────────────────────────────────
 script_path = "/tmp/ssm-deploy.sh"
@@ -192,6 +210,10 @@ with open(script_path, "rb") as f:
     script_b64 = base64.b64encode(f.read()).decode("ascii")
 
 # ── Build SSM command list ────────────────────────────────────────────────────
+# Three commands sent as a JSON array:
+#   1. Decode the base64 script to a temp file
+#   2. Make it executable
+#   3. Execute it
 commands = [
     f'printf "%s" {script_b64} | base64 -d > /tmp/nandhas-deploy.sh',
     "chmod 700 /tmp/nandhas-deploy.sh",
@@ -217,66 +239,56 @@ command_id = result.stdout.strip()
 print(f"SSM CommandId: {command_id}")
 
 # ── Poll until terminal state ─────────────────────────────────────────────────
-max_wait = 660
+max_wait = 660   # seconds
 interval  = 15
 elapsed   = 0
 status    = "Pending"
 
 print("Polling SSM command status...")
 while elapsed < max_wait:
-    poll = subprocess.run(
-        [
-            "aws", "ssm", "get-command-invocation",
-            "--command-id", command_id,
-            "--instance-id", EC2_INSTANCE_ID,
-            "--query", "Status",
-            "--output", "text",
-        ],
-        capture_output=True, text=True,
-    )
-    status = poll.stdout.strip() if poll.returncode == 0 else "Pending"
+    status = aws_query(
+        "ssm", "get-command-invocation",
+        "--command-id", command_id,
+        "--instance-id", EC2_INSTANCE_ID,
+        "--query", "Status",
+        "--output", "text",
+    ) or "Pending"
     print(f"  [{elapsed}s] Status: {status}")
     if status in ("Success", "Failed", "Cancelled", "TimedOut"):
         break
     time.sleep(interval)
     elapsed += interval
 
-# ── Stream EC2 stdout and stderr back to Actions console ──────────────────────
+# ── Always stream EC2 stdout + stderr to Actions console ─────────────────────
 print("=" * 64)
 print("REMOTE STDOUT (EC2 deployment log):")
 print("=" * 64)
-out = subprocess.run(
-    [
-        "aws", "ssm", "get-command-invocation",
-        "--command-id", command_id,
-        "--instance-id", EC2_INSTANCE_ID,
-        "--query", "StandardOutputContent",
-        "--output", "text",
-    ],
-    capture_output=True, text=True,
+stdout_content = aws_query(
+    "ssm", "get-command-invocation",
+    "--command-id", command_id,
+    "--instance-id", EC2_INSTANCE_ID,
+    "--query", "StandardOutputContent",
+    "--output", "text",
 )
-print(out.stdout or "(no stdout)")
+print(stdout_content or "(no stdout)")
 
 print("=" * 64)
 print("REMOTE STDERR (EC2 deployment errors):")
 print("=" * 64)
-err = subprocess.run(
-    [
-        "aws", "ssm", "get-command-invocation",
-        "--command-id", command_id,
-        "--instance-id", EC2_INSTANCE_ID,
-        "--query", "StandardErrorContent",
-        "--output", "text",
-    ],
-    capture_output=True, text=True,
+stderr_content = aws_query(
+    "ssm", "get-command-invocation",
+    "--command-id", command_id,
+    "--instance-id", EC2_INSTANCE_ID,
+    "--query", "StandardErrorContent",
+    "--output", "text",
 )
-print(err.stdout or "(no stderr)")
+print(stderr_content or "(no stderr)")
 
 print("=" * 64)
 print(f"FINAL SSM STATUS: {status}")
 print("=" * 64)
 
-# ── Fail the job if the deployment was not successful ─────────────────────────
+# ── Fail the workflow job if the deployment was not successful ────────────────
 if status != "Success":
     print(f"ERROR: Deployment failed with SSM status: {status}", file=sys.stderr)
     sys.exit(1)
