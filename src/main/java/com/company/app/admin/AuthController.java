@@ -60,7 +60,9 @@ public class AuthController {
 
     @PostMapping("/firebase")
     @Operation(summary = "Authenticate customer using Firebase ID Token")
-    public ResponseEntity<ApiResponse<AuthResponseDTO>> authenticateFirebase(@RequestHeader("Authorization") String authorizationHeader) {
+    public ResponseEntity<ApiResponse<AuthResponseDTO>> authenticateFirebase(
+            @RequestHeader("Authorization") String authorizationHeader,
+            @RequestBody(required = false) java.util.Map<String, String> payload) {
         try {
             if (authorizationHeader == null || !authorizationHeader.startsWith("Bearer ")) {
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(ApiResponse.error("Missing or invalid Authorization header"));
@@ -78,15 +80,35 @@ public class AuthController {
                 return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.error("Phone number missing from Firebase token"));
             }
 
-            // Find or create customer
-            Customer customer = customerRepository.findByFirebaseUid(uid).orElseGet(() -> {
+            // Extract optional fullName from the request body
+            String fullName = "Customer";
+            if (payload != null && payload.containsKey("fullName") && payload.get("fullName") != null && !payload.get("fullName").trim().isEmpty()) {
+                fullName = payload.get("fullName").trim();
+            }
+
+            final String finalFullName = fullName;
+
+            // Find customer
+            java.util.Optional<Customer> existingCustomerOpt = customerRepository.findByFirebaseUid(uid);
+            
+            Customer customer;
+            if (existingCustomerOpt.isPresent()) {
+                customer = existingCustomerOpt.get();
+            } else {
+                // Customer does not exist in backend
+                if (finalFullName == null || finalFullName.equals("Customer")) {
+                    // Step 12: Existing Firebase user but missing backend customer -> require profile completion
+                    return ResponseEntity.status(HttpStatus.ACCEPTED).body(ApiResponse.error("PROFILE_INCOMPLETE"));
+                }
+                
+                // Create new customer
                 Customer newCustomer = Customer.builder()
                         .firebaseUid(uid)
                         .phone(phone)
-                        .fullName("Customer") // Default name, should be updated via profile
+                        .fullName(finalFullName)
                         .build();
-                return customerRepository.save(newCustomer);
-            });
+                customer = customerRepository.save(newCustomer);
+            }
 
             // Create Authentication object for Spring Security
             CustomUserDetails userDetails = CustomUserDetails.create(customer);
