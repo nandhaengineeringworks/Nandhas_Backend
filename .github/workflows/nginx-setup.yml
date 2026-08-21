@@ -30,13 +30,13 @@ jobs:
           set -euo pipefail
           
           echo "Updating packages..."
-          sudo apt-get update -y
+          sudo yum update -y
           
           echo "Installing Nginx..."
-          sudo apt-get install -y nginx
+          sudo yum install -y nginx
           
           echo "Writing Nginx configuration..."
-          cat << 'NGINX' | sudo tee /etc/nginx/sites-available/nandhas-api
+          cat << 'NGINX' | sudo tee /etc/nginx/conf.d/nandhas-api.conf
           server {
               listen 80;
               server_name _;
@@ -52,11 +52,8 @@ jobs:
           }
           NGINX
           
-          echo "Enabling site..."
-          sudo ln -sf /etc/nginx/sites-available/nandhas-api /etc/nginx/sites-enabled/
-          sudo rm -f /etc/nginx/sites-enabled/default
-          
           echo "Restarting Nginx..."
+          sudo systemctl enable nginx
           sudo systemctl restart nginx
           echo "Nginx configured successfully!"
           EOF
