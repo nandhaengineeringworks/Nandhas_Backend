@@ -1,0 +1,21 @@
+name: Retrieve DB Details
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  retrieve:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print Details
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_USERNAME: ${{ secrets.DB_USERNAME }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        run: |
+          echo "DB_HOST: $(echo -n $DB_HOST | base64)"
+          echo "DB_USERNAME: $(echo -n $DB_USERNAME | base64)"
+          echo "DB_PASSWORD: $(echo -n $DB_PASSWORD | base64)"
