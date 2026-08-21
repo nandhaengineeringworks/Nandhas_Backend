@@ -1,0 +1,121 @@
+name: Import DB via Docker on EC2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  import-db:
+    name: Import Database via Docker
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Upload SQL dump to S3
+        run: |
+          echo "Uploading SQL dump to S3..."
+          aws s3 cp nandhas-rds-migration.sql s3://${{ secrets.AWS_S3_BUCKET }}/nandhas-rds-migration.sql
+          echo "Upload complete."
+
+      - name: Run import on EC2 via SSM + Docker
+        run: |
+          set -euo pipefail
+
+          DB_HOST="${{ secrets.DB_HOST }}"
+          DB_PORT="${{ secrets.DB_PORT }}"
+          DB_USERNAME="${{ secrets.DB_USERNAME }}"
+          DB_PASSWORD="${{ secrets.DB_PASSWORD }}"
+          DB_NAME="${{ secrets.DB_NAME }}"
+          S3_BUCKET="${{ secrets.AWS_S3_BUCKET }}"
+          EC2_INSTANCE_ID="${{ secrets.EC2_INSTANCE_ID }}"
+
+          # Write the remote shell script
+          cat > /tmp/import_script.sh << REMOTESCRIPT
+          #!/bin/bash
+          set -euo pipefail
+
+          echo "=== Downloading SQL dump from S3 ==="
+          aws s3 cp "s3://${S3_BUCKET}/nandhas-rds-migration.sql" /tmp/nandhas-rds-migration.sql
+
+          echo "=== Converting encoding if needed ==="
+          if file /tmp/nandhas-rds-migration.sql | grep -qi "UTF-16"; then
+            iconv -f UTF-16LE -t UTF-8 /tmp/nandhas-rds-migration.sql > /tmp/converted.sql
+            mv /tmp/converted.sql /tmp/nandhas-rds-migration.sql
+            echo "Converted UTF-16 to UTF-8."
+          fi
+
+          echo "=== Starting MySQL import via Docker ==="
+          docker run --rm \
+            -v /tmp/nandhas-rds-migration.sql:/tmp/dump.sql:ro \
+            mysql:8 \
+            sh -c "mysql -h '${DB_HOST}' -P '${DB_PORT}' -u '${DB_USERNAME}' -p'${DB_PASSWORD}' '${DB_NAME}' < /tmp/dump.sql"
+
+          echo "=== Import complete! Cleaning up ==="
+          rm /tmp/nandhas-rds-migration.sql
+          echo "Done."
+          REMOTESCRIPT
+
+          # Base64-encode the script so SSM can safely transport it
+          SCRIPT_B64=$(base64 -w 0 /tmp/import_script.sh)
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${EC2_INSTANCE_ID}" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "{\"commands\":[
+              \"printf '%s' ${SCRIPT_B64} | base64 -d > /tmp/nandhas-docker-import.sh\",
+              \"chmod 700 /tmp/nandhas-docker-import.sh\",
+              \"bash /tmp/nandhas-docker-import.sh\"
+            ]}" \
+            --timeout-seconds 1800 \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "SSM CommandId: ${COMMAND_ID}"
+          echo "Waiting for import to complete..."
+
+          for i in $(seq 1 90); do
+            sleep 10
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "${COMMAND_ID}" \
+              --instance-id "${EC2_INSTANCE_ID}" \
+              --query "Status" \
+              --output text 2>/dev/null || echo "Pending")
+
+            echo "  [${i}] Status: ${STATUS}"
+
+            if [[ "$STATUS" == "Success" || "$STATUS" == "Failed" || "$STATUS" == "Cancelled" || "$STATUS" == "TimedOut" ]]; then
+              echo ""
+              echo "====== EC2 STDOUT ======"
+              aws ssm get-command-invocation \
+                --command-id "${COMMAND_ID}" \
+                --instance-id "${EC2_INSTANCE_ID}" \
+                --query "StandardOutputContent" \
+                --output text || true
+              echo ""
+              echo "====== EC2 STDERR ======"
+              aws ssm get-command-invocation \
+                --command-id "${COMMAND_ID}" \
+                --instance-id "${EC2_INSTANCE_ID}" \
+                --query "StandardErrorContent" \
+                --output text || true
+              echo ""
+              echo "Final Status: ${STATUS}"
+              if [ "$STATUS" != "Success" ]; then
+                exit 1
+              fi
+              exit 0
+            fi
+          done
+
+          echo "Timed out waiting for import."
+          exit 1
