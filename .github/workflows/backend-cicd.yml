@@ -66,7 +66,6 @@ jobs:
           S_DB_PASS:        ${{ secrets.DB_PASSWORD }}
           S_JWT:            ${{ secrets.JWT_SECRET }}
           S_S3:             ${{ secrets.AWS_S3_BUCKET }}
-          S_CF:             ${{ secrets.AWS_CLOUDFRONT_DOMAIN }}
           S_FIREBASE:       ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON_B64 }}
         run: |
           set -euo pipefail
@@ -81,7 +80,6 @@ jobs:
           [ -z "${S_DB_PASS}"    ] && MISSING="${MISSING} DB_PASSWORD"
           [ -z "${S_JWT}"        ] && MISSING="${MISSING} JWT_SECRET"
           [ -z "${S_S3}"         ] && MISSING="${MISSING} AWS_S3_BUCKET"
-          [ -z "${S_CF}"         ] && MISSING="${MISSING} AWS_CLOUDFRONT_DOMAIN"
           [ -z "${S_FIREBASE}"   ] && MISSING="${MISSING} FIREBASE_SERVICE_ACCOUNT_JSON_B64"
           if [ -n "${MISSING}" ]; then
             echo "ERROR: Missing GitHub Secrets:${MISSING}"
@@ -135,7 +133,6 @@ jobs:
           V_DB_USER:    ${{ secrets.DB_USERNAME }}
           V_DB_PASS:    ${{ secrets.DB_PASSWORD }}
           V_S3_BUCKET:  ${{ secrets.AWS_S3_BUCKET }}
-          V_CF_DOMAIN:  ${{ secrets.AWS_CLOUDFRONT_DOMAIN }}
           V_JWT:        ${{ secrets.JWT_SECRET }}
           V_REGION:     ${{ secrets.AWS_REGION }}
         run: |

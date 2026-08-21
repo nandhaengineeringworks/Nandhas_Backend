@@ -29,7 +29,6 @@ lines = [
     "STORAGE_TYPE=s3",
     f"AWS_REGION={get('V_REGION')}",
     f"AWS_S3_BUCKET={get('V_S3_BUCKET')}",
-    f"AWS_CLOUDFRONT_DOMAIN={get('V_CF_DOMAIN')}",
     f"JWT_SECRET={get('V_JWT')}",
     "FIREBASE_ENABLED=true",
     "GOOGLE_APPLICATION_CREDENTIALS=/opt/nandhas/secrets/firebase-service-account.json",
