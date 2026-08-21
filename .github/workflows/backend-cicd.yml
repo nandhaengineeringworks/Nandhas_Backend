@@ -14,11 +14,10 @@ concurrency:
   group: backend-production
   cancel-in-progress: false
 
-env:
-  AWS_REGION: ${{ secrets.AWS_REGION }}
-  ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-
 jobs:
+  # ─────────────────────────────────────────────────────────
+  # JOB 1: Run Spring Boot tests
+  # ─────────────────────────────────────────────────────────
   test:
     name: Test Spring Boot backend
     runs-on: ubuntu-latest
@@ -27,7 +26,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Java 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
@@ -38,219 +37,341 @@ jobs:
           chmod +x mvnw
           ./mvnw --batch-mode clean verify
 
+  # ─────────────────────────────────────────────────────────
+  # JOB 2: Build Docker image, push to ECR, deploy via SSM
+  # ─────────────────────────────────────────────────────────
   build-and-deploy:
     name: Build, push to ECR, deploy to EC2
     needs: test
     if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------
+      # Validate required secrets are present before doing any real work
+      # ------------------------------------------------------------------
+      - name: Validate required secrets
+        run: |
+          MISSING=""
+          [ -z "${{ secrets.AWS_REGION }}"                        ] && MISSING="$MISSING AWS_REGION"
+          [ -z "${{ secrets.ECR_REPOSITORY }}"                    ] && MISSING="$MISSING ECR_REPOSITORY"
+          [ -z "${{ secrets.AWS_ACCESS_KEY_ID }}"                 ] && MISSING="$MISSING AWS_ACCESS_KEY_ID"
+          [ -z "${{ secrets.AWS_SECRET_ACCESS_KEY }}"             ] && MISSING="$MISSING AWS_SECRET_ACCESS_KEY"
+          [ -z "${{ secrets.EC2_INSTANCE_ID }}"                   ] && MISSING="$MISSING EC2_INSTANCE_ID"
+          [ -z "${{ secrets.DB_HOST }}"                           ] && MISSING="$MISSING DB_HOST"
+          [ -z "${{ secrets.DB_USERNAME }}"                       ] && MISSING="$MISSING DB_USERNAME"
+          [ -z "${{ secrets.DB_PASSWORD }}"                       ] && MISSING="$MISSING DB_PASSWORD"
+          [ -z "${{ secrets.JWT_SECRET }}"                        ] && MISSING="$MISSING JWT_SECRET"
+          [ -z "${{ secrets.AWS_S3_BUCKET }}"                     ] && MISSING="$MISSING AWS_S3_BUCKET"
+          [ -z "${{ secrets.AWS_CLOUDFRONT_DOMAIN }}"             ] && MISSING="$MISSING AWS_CLOUDFRONT_DOMAIN"
+          [ -z "${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON_B64 }}" ] && MISSING="$MISSING FIREBASE_SERVICE_ACCOUNT_JSON_B64"
+          if [ -n "$MISSING" ]; then
+            echo "❌ Missing required GitHub Secrets:$MISSING"
+            echo "Add them at: Settings → Secrets and variables → Actions"
+            exit 1
+          fi
+          echo "✓ All required secrets are present"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Login to Amazon ECR
-        id: ecr
+        id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and push image
-        id: image
+      # ------------------------------------------------------------------
+      # Build the Docker image and push ONLY the commit-SHA tag.
+      # Using the commit SHA makes deployments fully deterministic.
+      # ------------------------------------------------------------------
+      - name: Build and push Docker image
+        id: build-image
         env:
-          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          docker build --pull -t "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" -t "$REGISTRY/$ECR_REPOSITORY:latest" .
-          docker push "$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
-          docker push "$REGISTRY/$ECR_REPOSITORY:latest"
-          echo "image=$REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          IMAGE_URI="${REGISTRY}/${REPOSITORY}:${IMAGE_TAG}"
+          echo "Building image: ${IMAGE_URI}"
+          docker build --pull -t "${IMAGE_URI}" -t "${REGISTRY}/${REPOSITORY}:latest" .
+          docker push "${IMAGE_URI}"
+          docker push "${REGISTRY}/${REPOSITORY}:latest"
+          echo "image=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
+          echo "registry=${REGISTRY}" >> "$GITHUB_OUTPUT"
 
-      - name: Prepare EC2 deployment command
+      # ------------------------------------------------------------------
+      # Build env file content as a base64 string so it can be safely
+      # injected into the SSM command without heredoc indentation issues.
+      # NOTE: All variable expansions here happen on the GitHub runner,
+      #       not on EC2. That is intentional — the runner has the secrets.
+      # ------------------------------------------------------------------
+      - name: Encode runtime environment
+        id: encode-env
         env:
-          IMAGE: ${{ steps.image.outputs.image }}
-          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_PORT: ${{ secrets.DB_PORT }}
           DB_NAME: ${{ secrets.DB_NAME }}
           DB_USERNAME: ${{ secrets.DB_USERNAME }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
-          CLOUDFRONT_DOMAIN: ${{ secrets.AWS_CLOUDFRONT_DOMAIN }}
+          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+          AWS_CLOUDFRONT_DOMAIN: ${{ secrets.AWS_CLOUDFRONT_DOMAIN }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
-          FIREBASE_JSON_B64: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON_B64 }}
         run: |
           set -euo pipefail
-          umask 077
+          # Write env file line-by-line so no heredoc indentation is involved.
+          # Variables expand here on the runner (that's what we want).
+          {
+            printf 'SPRING_PROFILES_ACTIVE=prod\n'
+            printf 'DB_HOST=%s\n'                   "${DB_HOST}"
+            printf 'DB_PORT=%s\n'                   "${DB_PORT:-3306}"
+            printf 'DB_NAME=%s\n'                   "${DB_NAME:-nandhas_ecommerce}"
+            printf 'DB_USERNAME=%s\n'               "${DB_USERNAME}"
+            printf 'DB_PASSWORD=%s\n'               "${DB_PASSWORD}"
+            printf 'STORAGE_TYPE=s3\n'
+            printf 'AWS_REGION=%s\n'                "${{ secrets.AWS_REGION }}"
+            printf 'AWS_S3_BUCKET=%s\n'             "${AWS_S3_BUCKET}"
+            printf 'AWS_CLOUDFRONT_DOMAIN=%s\n'     "${AWS_CLOUDFRONT_DOMAIN}"
+            printf 'JWT_SECRET=%s\n'                "${JWT_SECRET}"
+            printf 'FIREBASE_ENABLED=true\n'
+            printf 'GOOGLE_APPLICATION_CREDENTIALS=/opt/nandhas/secrets/firebase-service-account.json\n'
+          } | base64 -w 0 > /tmp/env.b64
+          echo "env_b64=$(cat /tmp/env.b64)" >> "$GITHUB_OUTPUT"
 
-          # Build the env file with NO leading whitespace on any line.
-          # We use sed to strip the leading whitespace so the YAML indentation
-          # doesn't break the github actions parser or the docker env file.
-          RUNTIME_ENV_B64=$(cat <<EOF | sed 's/^[ \t]*//' | base64 -w 0
-            SPRING_PROFILES_ACTIVE=prod
-            DB_HOST=$DB_HOST
-            DB_PORT=${DB_PORT:-3306}
-            DB_NAME=${DB_NAME:-nandhas_ecommerce}
-            DB_USERNAME=$DB_USERNAME
-            DB_PASSWORD=$DB_PASSWORD
-            STORAGE_TYPE=s3
-            AWS_REGION=$AWS_REGION
-            AWS_S3_BUCKET=$S3_BUCKET
-            AWS_CLOUDFRONT_DOMAIN=$CLOUDFRONT_DOMAIN
-            JWT_SECRET=$JWT_SECRET
-            FIREBASE_ENABLED=true
-            GOOGLE_APPLICATION_CREDENTIALS=/opt/nandhas/secrets/firebase-service-account.json
-          EOF
-          )
+      # ------------------------------------------------------------------
+      # Write the remote deployment script as a plain shell file using
+      # printf statements — no heredoc, no indentation issues.
+      # Placeholders are substituted AFTER the script file is written, so
+      # the final script already has the real values baked in before it is
+      # base64-encoded and sent to EC2 via SSM.
+      # ------------------------------------------------------------------
+      - name: Build and submit SSM deployment command
+        env:
+          IMAGE_URI: ${{ steps.build-image.outputs.image }}
+          ECR_REGISTRY: ${{ steps.build-image.outputs.registry }}
+          AWS_REGION_VAL: ${{ secrets.AWS_REGION }}
+          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+          RUNTIME_ENV_B64: ${{ steps.encode-env.outputs.env_b64 }}
+          FIREBASE_B64: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON_B64 }}
+        run: |
+          set -euo pipefail
 
-          # Write the remote deployment script to a temp file.
-          # Single-quoted REMOTE_SCRIPT heredoc prevents the runner from
-          # expanding variables that must be resolved on EC2 instead.
-          cat <<'REMOTE_SCRIPT' | sed 's/^[ \t]*//' > /tmp/ssm-deploy.sh
-            set -euo pipefail
-            IMAGE="IMAGE_PLACEHOLDER"
-            REGISTRY="REGISTRY_PLACEHOLDER"
-            REGION="REGION_PLACEHOLDER"
-            ENV_B64="ENV_B64_PLACEHOLDER"
-            FIREBASE_B64="FIREBASE_B64_PLACEHOLDER"
-            
-            # Create directories
-            sudo mkdir -p /opt/nandhas/secrets /opt/nandhas/uploads
-            
-            # Write env file – decode from base64 so no secrets appear in process list
-            echo "$ENV_B64" | base64 -d | sudo tee /opt/nandhas/backend.env >/dev/null
-            
-            # Write Firebase service account JSON
-            if [ -n "$FIREBASE_B64" ]; then
-              echo "$FIREBASE_B64" | base64 -d | sudo tee /opt/nandhas/secrets/firebase-service-account.json >/dev/null
-            else
-              echo "{}" | sudo tee /opt/nandhas/secrets/firebase-service-account.json >/dev/null
-            fi
-            
-            # Permissions: files readable by all (container runs as non-root appuser)
-            sudo chmod 755 /opt/nandhas /opt/nandhas/secrets /opt/nandhas/uploads
-            sudo chmod 644 /opt/nandhas/backend.env /opt/nandhas/secrets/firebase-service-account.json
-            sudo chmod -R 777 /opt/nandhas/uploads
-            
-            # Authenticate to ECR and pull the new image
-            aws ecr get-login-password --region "$REGION" | sudo docker login --username AWS --password-stdin "$REGISTRY"
-            sudo docker pull "$IMAGE"
-            
-            # Stop and remove the old container if running
-            sudo docker rm -f nandhas-backend 2>/dev/null || true
-            
-            # Start the new container
-            CONTAINER_ID=$(sudo docker run -d --name nandhas-backend --restart unless-stopped \
-              --env-file /opt/nandhas/backend.env \
-              -p 8080:8080 \
-              -v /opt/nandhas/secrets:/opt/nandhas/secrets:ro \
-              -v /opt/nandhas/uploads:/app/uploads \
-              "$IMAGE")
-            
-            echo "Container started: $CONTAINER_ID"
-            
-            # Brief pause – if the JVM crashes at startup it will have exited by now
-            sleep 10
-            
-            if ! sudo docker ps --format '{{.Names}}' | grep -q 'nandhas-backend'; then
-              echo "❌ Container exited immediately after start."
-              echo "--- Container state ---"
-              sudo docker inspect nandhas-backend \
-                --format='Status={{.State.Status}} ExitCode={{.State.ExitCode}} Error={{.State.Error}}' 2>/dev/null || true
-              echo "--- All containers ---"
-              sudo docker ps -a
-              echo "--- Container logs (last 200 lines) ---"
-              sudo docker logs --tail 200 "$CONTAINER_ID" 2>&1 || true
-              exit 1
-            fi
-            
-            echo "Container is running. Waiting for Spring Boot to accept HTTP traffic on port 8080..."
-            HEALTHY=0
-            for i in $(seq 1 25); do
-              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:8080/api/products?page=0&size=1" || echo "000")
-              if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "403" ]; then
-                echo "✓ Backend API is responsive (HTTP $HTTP_CODE on attempt $i)"
-                HEALTHY=1
-                break
-              fi
-              echo "Attempt $i/25: HTTP $HTTP_CODE – waiting 5s..."
-              sleep 5
-            done
-            
-            if [ "$HEALTHY" -ne 1 ]; then
-              echo "❌ Backend health check failed after 25 attempts."
-              echo "--- Container state ---"
-              sudo docker inspect nandhas-backend \
-                --format='Status={{.State.Status}} ExitCode={{.State.ExitCode}} Error={{.State.Error}}' 2>/dev/null || true
-              echo "--- Container logs (last 200 lines) ---"
-              sudo docker logs --tail 200 nandhas-backend 2>&1 || true
-              exit 1
-            fi
-            
-            sudo docker image prune -af --filter "until=168h"
-            echo "✓ Backend deployment completed successfully!"
-          REMOTE_SCRIPT
+          # ── 1. Write the remote script using printf (no heredocs) ──────
+          #    Single-quotes around variable names prevent expansion here;
+          #    these will be real values once substituted below.
+          DEPLOY_SCRIPT="/tmp/ssm-deploy.sh"
 
-          # Replace placeholders with real values
-          REMOTE_SCRIPT_CONTENT=$(< /tmp/ssm-deploy.sh)
-          REMOTE_SCRIPT_CONTENT=${REMOTE_SCRIPT_CONTENT//IMAGE_PLACEHOLDER/$IMAGE}
-          REMOTE_SCRIPT_CONTENT=${REMOTE_SCRIPT_CONTENT//REGISTRY_PLACEHOLDER/${{ steps.ecr.outputs.registry }}}
-          REMOTE_SCRIPT_CONTENT=${REMOTE_SCRIPT_CONTENT//REGION_PLACEHOLDER/$AWS_REGION}
-          REMOTE_SCRIPT_CONTENT=${REMOTE_SCRIPT_CONTENT//ENV_B64_PLACEHOLDER/$RUNTIME_ENV_B64}
-          REMOTE_SCRIPT_CONTENT=${REMOTE_SCRIPT_CONTENT//FIREBASE_B64_PLACEHOLDER/$FIREBASE_JSON_B64}
-          printf '%s' "$REMOTE_SCRIPT_CONTENT" > /tmp/ssm-deploy.sh
+          printf '%s\n' '#!/usr/bin/env bash'                                                                    > "$DEPLOY_SCRIPT"
+          printf '%s\n' 'set -euo pipefail'                                                                     >> "$DEPLOY_SCRIPT"
+          printf '%s\n' ''                                                                                       >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'IMAGE="__IMAGE_URI__"'                                                                  >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'REGISTRY="__ECR_REGISTRY__"'                                                           >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'REGION="__AWS_REGION__"'                                                               >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'ENV_B64="__ENV_B64__"'                                                                  >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'FIREBASE_B64="__FIREBASE_B64__"'                                                        >> "$DEPLOY_SCRIPT"
+          printf '%s\n' ''                                                                                       >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'echo "=== Nandhas Backend Deployment ==="'                                              >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'echo "Image: $IMAGE"'                                                                   >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'echo "Region: $REGION"'                                                                 >> "$DEPLOY_SCRIPT"
+          printf '%s\n' ''                                                                                       >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '# ── Directories ────────────────────────────────────────────'                         >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'sudo mkdir -p /opt/nandhas/secrets /opt/nandhas/uploads'                               >> "$DEPLOY_SCRIPT"
+          printf '%s\n' ''                                                                                       >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '# ── Write env file (base64-decoded, no secrets in process list) ──'                   >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'printf "%s" "$ENV_B64" | base64 -d | sudo tee /opt/nandhas/backend.env > /dev/null'   >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'echo "✓ backend.env written"'                                                          >> "$DEPLOY_SCRIPT"
+          printf '%s\n' ''                                                                                       >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '# ── Write Firebase credentials ──────────────────────────────'                        >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'if [ -n "$FIREBASE_B64" ]; then'                                                       >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  printf "%s" "$FIREBASE_B64" | base64 -d | sudo tee /opt/nandhas/secrets/firebase-service-account.json > /dev/null' >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  echo "✓ Firebase credentials written"'                                               >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'else'                                                                                   >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  echo "{}" | sudo tee /opt/nandhas/secrets/firebase-service-account.json > /dev/null' >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  echo "⚠ No Firebase credentials provided, wrote empty JSON"'                         >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'fi'                                                                                     >> "$DEPLOY_SCRIPT"
+          printf '%s\n' ''                                                                                       >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '# ── Permissions ─────────────────────────────────────────────'                        >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'sudo chmod 755 /opt/nandhas /opt/nandhas/secrets /opt/nandhas/uploads'                 >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'sudo chmod 644 /opt/nandhas/backend.env /opt/nandhas/secrets/firebase-service-account.json' >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'sudo chmod -R 777 /opt/nandhas/uploads'                                                >> "$DEPLOY_SCRIPT"
+          printf '%s\n' ''                                                                                       >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '# ── ECR login using EC2 IAM role (no static keys needed) ───'                         >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'echo "Authenticating Docker to ECR..."'                                                 >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'aws ecr get-login-password --region "$REGION" | sudo docker login --username AWS --password-stdin "$REGISTRY"' >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'echo "✓ ECR login successful"'                                                          >> "$DEPLOY_SCRIPT"
+          printf '%s\n' ''                                                                                       >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '# ── Pull the exact image built by CI ────────────────────────'                        >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'echo "Pulling image: $IMAGE"'                                                          >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'sudo docker pull "$IMAGE"'                                                              >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'echo "✓ Image pulled"'                                                                  >> "$DEPLOY_SCRIPT"
+          printf '%s\n' ''                                                                                       >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '# ── Stop and remove previous container gracefully ───────────'                        >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'if sudo docker ps -a --format "{{.Names}}" | grep -q "^nandhas-backend$"; then'        >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  echo "Stopping existing container..."'                                                >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  sudo docker stop nandhas-backend 2>/dev/null || true'                                 >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  sudo docker rm   nandhas-backend 2>/dev/null || true'                                 >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  echo "✓ Old container removed"'                                                       >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'fi'                                                                                     >> "$DEPLOY_SCRIPT"
+          printf '%s\n' ''                                                                                       >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '# ── Start new container ─────────────────────────────────────'                        >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'CONTAINER_ID=$(sudo docker run -d \'                                                    >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  --name nandhas-backend \'                                                             >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  --restart unless-stopped \'                                                           >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  --env-file /opt/nandhas/backend.env \'                                                >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  -p 8080:8080 \'                                                                       >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  -v /opt/nandhas/secrets:/opt/nandhas/secrets:ro \'                                    >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  -v /opt/nandhas/uploads:/app/uploads \'                                              >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  "$IMAGE")'                                                                            >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'echo "Container started: $CONTAINER_ID"'                                                >> "$DEPLOY_SCRIPT"
+          printf '%s\n' ''                                                                                       >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '# ── Wait for JVM to initialize (crash window) ───────────────'                        >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'echo "Waiting 15s for Spring Boot to initialize..."'                                    >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'sleep 15'                                                                               >> "$DEPLOY_SCRIPT"
+          printf '%s\n' ''                                                                                       >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '# ── Check the container did not immediately exit ─────────────'                       >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'if ! sudo docker ps --format "{{.Names}}" | grep -q "^nandhas-backend$"; then'          >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  echo "❌ Container exited immediately after start."'                                   >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  echo "--- Container state ---"'                                                       >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  sudo docker inspect nandhas-backend \
+    --format="Status={{.State.Status}} ExitCode={{.State.ExitCode}}" 2>/dev/null || true'                        >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  echo "--- All containers ---"'                                                        >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  sudo docker ps -a'                                                                    >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  echo "--- Container logs (last 300 lines, NO secrets) ---"'                           >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  sudo docker logs --tail 300 "$CONTAINER_ID" 2>&1 || true'                             >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  exit 1'                                                                               >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'fi'                                                                                     >> "$DEPLOY_SCRIPT"
+          printf '%s\n' ''                                                                                       >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '# ── HTTP health-check (25 × 5s = 125s max) ──────────────────'                        >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'echo "Container running. Waiting for HTTP traffic on port 8080..."'                     >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'HEALTHY=0'                                                                              >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'for i in $(seq 1 25); do'                                                              >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+    "http://127.0.0.1:8080/api/products?page=0&size=1" || echo "000")'                                          >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "403" ]; then' >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '    echo "✓ Backend API responsive (HTTP $HTTP_CODE) on attempt $i"'                   >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '    HEALTHY=1'                                                                          >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '    break'                                                                              >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  fi'                                                                                   >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  echo "Attempt $i/25: HTTP $HTTP_CODE – retrying in 5s..."'                           >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  sleep 5'                                                                              >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'done'                                                                                   >> "$DEPLOY_SCRIPT"
+          printf '%s\n' ''                                                                                       >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'if [ "$HEALTHY" -ne 1 ]; then'                                                         >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  echo "❌ Health check failed after 25 attempts."'                                      >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  echo "--- Container state ---"'                                                       >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  sudo docker inspect nandhas-backend \
+    --format="Status={{.State.Status}} ExitCode={{.State.ExitCode}}" 2>/dev/null || true'                        >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  echo "--- Container logs (last 300 lines, NO secrets) ---"'                           >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  sudo docker logs --tail 300 nandhas-backend 2>&1 || true'                             >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '  exit 1'                                                                               >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'fi'                                                                                     >> "$DEPLOY_SCRIPT"
+          printf '%s\n' ''                                                                                       >> "$DEPLOY_SCRIPT"
+          printf '%s\n' '# ── Prune old images ────────────────────────────────────────'                        >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'sudo docker image prune -af --filter "until=168h" 2>/dev/null || true'                 >> "$DEPLOY_SCRIPT"
+          printf '%s\n' 'echo "✓ Deployment completed successfully!"'                                            >> "$DEPLOY_SCRIPT"
 
-          # Encode the final script as Base64 so SSM receives exact bytes
-          # (avoids shell quoting issues with secrets inside the script body)
+          # ── 2. Substitute placeholders with real values ─────────────────
+          # Use a Python one-liner (available on all ubuntu-latest runners)
+          # for safe literal substitution that handles special characters
+          # (slashes, ampersands) in secrets without shell mangling.
+          python3 - <<'PYEOF'
+import os, pathlib
 
+script = pathlib.Path("/tmp/ssm-deploy.sh").read_text()
+script = script.replace("__IMAGE_URI__",    os.environ["IMAGE_URI"])
+script = script.replace("__ECR_REGISTRY__", os.environ["ECR_REGISTRY"])
+script = script.replace("__AWS_REGION__",   os.environ["AWS_REGION_VAL"])
+script = script.replace("__ENV_B64__",      os.environ["RUNTIME_ENV_B64"])
+script = script.replace("__FIREBASE_B64__", os.environ["FIREBASE_B64"])
+pathlib.Path("/tmp/ssm-deploy.sh").write_text(script)
+print("✓ Placeholders substituted")
+PYEOF
+
+          # ── 3. Base64-encode the script to send it safely over SSM ──────
           SCRIPT_B64=$(base64 -w 0 /tmp/ssm-deploy.sh)
-          COMMANDS=$(jq -n --arg script "$SCRIPT_B64" '[
-            "echo \($script) | base64 -d > /tmp/nandhas-deploy.sh",
+
+          # ── 4. Build the SSM command array (3 commands) ─────────────────
+          #    • Decode the script to a temp file
+          #    • Make it executable
+          #    • Run it
+          COMMANDS=$(jq -n --arg s "$SCRIPT_B64" '[
+            ("printf \"%s\" " + $s + " | base64 -d > /tmp/nandhas-deploy.sh"),
             "chmod 700 /tmp/nandhas-deploy.sh",
             "bash /tmp/nandhas-deploy.sh"
           ]')
 
+          # ── 5. Send the SSM command ──────────────────────────────────────
+          echo "Sending SSM command to EC2 instance: ${EC2_INSTANCE_ID}"
           COMMAND_ID=$(aws ssm send-command \
-            --instance-ids "$EC2_INSTANCE_ID" \
+            --instance-ids "${EC2_INSTANCE_ID}" \
             --document-name "AWS-RunShellScript" \
-            --comment "Nandhas backend deployment $GITHUB_SHA" \
-            --parameters "commands=$COMMANDS" \
+            --comment "Nandhas backend deployment ${GITHUB_SHA}" \
+            --parameters "commands=${COMMANDS}" \
             --timeout-seconds 600 \
-            --query 'Command.CommandId' --output text)
+            --query 'Command.CommandId' \
+            --output text)
 
-          echo "SSM command submitted: $COMMAND_ID"
-          
+          echo "SSM command submitted: ${COMMAND_ID}"
+
+          # ── 6. Poll until the command reaches a terminal state ───────────
           set +e
-          MAX_WAIT=600
+          MAX_WAIT=660
           INTERVAL=15
           ELAPSED=0
-          STATUS="InProgress"
+          STATUS="Pending"
 
+          echo "Waiting for SSM command to complete..."
           while [ $ELAPSED -lt $MAX_WAIT ]; do
             STATUS=$(aws ssm get-command-invocation \
-              --command-id "$COMMAND_ID" \
-              --instance-id "$EC2_INSTANCE_ID" \
-              --query 'Status' --output text 2>/dev/null || echo "Pending")
-            
-            echo "[$ELAPSED s] SSM Status: $STATUS"
-            
-            if [ "$STATUS" = "Success" ] || [ "$STATUS" = "Failed" ] || \
-               [ "$STATUS" = "Cancelled" ] || [ "$STATUS" = "TimedOut" ]; then
-              break
-            fi
-            
+              --command-id "${COMMAND_ID}" \
+              --instance-id "${EC2_INSTANCE_ID}" \
+              --query 'Status' \
+              --output text 2>/dev/null || echo "Pending")
+
+            echo "  [${ELAPSED}s] Status: ${STATUS}"
+
+            case "$STATUS" in
+              Success|Failed|Cancelled|TimedOut) break ;;
+            esac
+
             sleep $INTERVAL
             ELAPSED=$((ELAPSED + INTERVAL))
           done
           set -e
 
+          # ── 7. Always print the remote stdout/stderr to the Actions log ──
+          echo "========================================================"
+          echo "SSM Command Output (StandardOutputContent):"
+          echo "========================================================"
           aws ssm get-command-invocation \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$EC2_INSTANCE_ID" \
-            --query '{Status:Status,ResponseCode:ResponseCode,Output:StandardOutputContent,Error:StandardErrorContent}' \
-            --output json
+            --command-id "${COMMAND_ID}" \
+            --instance-id "${EC2_INSTANCE_ID}" \
+            --query 'StandardOutputContent' \
+            --output text 2>/dev/null || echo "(no stdout)"
 
-          test "$STATUS" = "Success"
+          echo "========================================================"
+          echo "SSM Command Error (StandardErrorContent):"
+          echo "========================================================"
+          aws ssm get-command-invocation \
+            --command-id "${COMMAND_ID}" \
+            --instance-id "${EC2_INSTANCE_ID}" \
+            --query 'StandardErrorContent' \
+            --output text 2>/dev/null || echo "(no stderr)"
+
+          echo "========================================================"
+          echo "Final SSM status: ${STATUS}"
+          echo "========================================================"
+
+          # ── 8. Fail the workflow if the deployment did not succeed ───────
+          if [ "$STATUS" != "Success" ]; then
+            echo "❌ SSM command finished with status: ${STATUS}"
+            exit 1
+          fi
+
+          echo "✓ Backend deployment pipeline completed successfully!"
