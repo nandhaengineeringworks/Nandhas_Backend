@@ -87,112 +87,112 @@ jobs:
           umask 077
 
           # Build the env file with NO leading whitespace on any line.
-          # The heredoc delimiter must be at column 0 so bash does not
-          # indent the body — this is the root cause of the previous failure.
-          RUNTIME_ENV_B64=$(base64 -w 0 <<EOF
-SPRING_PROFILES_ACTIVE=prod
-DB_HOST=$DB_HOST
-DB_PORT=${DB_PORT:-3306}
-DB_NAME=${DB_NAME:-nandhas_ecommerce}
-DB_USERNAME=$DB_USERNAME
-DB_PASSWORD=$DB_PASSWORD
-STORAGE_TYPE=s3
-AWS_REGION=$AWS_REGION
-AWS_S3_BUCKET=$S3_BUCKET
-AWS_CLOUDFRONT_DOMAIN=$CLOUDFRONT_DOMAIN
-JWT_SECRET=$JWT_SECRET
-FIREBASE_ENABLED=true
-GOOGLE_APPLICATION_CREDENTIALS=/opt/nandhas/secrets/firebase-service-account.json
-EOF
-)
+          # We use sed to strip the leading whitespace so the YAML indentation
+          # doesn't break the github actions parser or the docker env file.
+          RUNTIME_ENV_B64=$(cat <<EOF | sed 's/^[ \t]*//' | base64 -w 0
+            SPRING_PROFILES_ACTIVE=prod
+            DB_HOST=$DB_HOST
+            DB_PORT=${DB_PORT:-3306}
+            DB_NAME=${DB_NAME:-nandhas_ecommerce}
+            DB_USERNAME=$DB_USERNAME
+            DB_PASSWORD=$DB_PASSWORD
+            STORAGE_TYPE=s3
+            AWS_REGION=$AWS_REGION
+            AWS_S3_BUCKET=$S3_BUCKET
+            AWS_CLOUDFRONT_DOMAIN=$CLOUDFRONT_DOMAIN
+            JWT_SECRET=$JWT_SECRET
+            FIREBASE_ENABLED=true
+            GOOGLE_APPLICATION_CREDENTIALS=/opt/nandhas/secrets/firebase-service-account.json
+          EOF
+          )
 
           # Write the remote deployment script to a temp file.
           # Single-quoted REMOTE_SCRIPT heredoc prevents the runner from
           # expanding variables that must be resolved on EC2 instead.
-          cat > /tmp/ssm-deploy.sh <<'REMOTE_SCRIPT'
-set -euo pipefail
-IMAGE="IMAGE_PLACEHOLDER"
-REGISTRY="REGISTRY_PLACEHOLDER"
-REGION="REGION_PLACEHOLDER"
-ENV_B64="ENV_B64_PLACEHOLDER"
-FIREBASE_B64="FIREBASE_B64_PLACEHOLDER"
-
-# Create directories
-sudo mkdir -p /opt/nandhas/secrets /opt/nandhas/uploads
-
-# Write env file – decode from base64 so no secrets appear in process list
-echo "$ENV_B64" | base64 -d | sudo tee /opt/nandhas/backend.env >/dev/null
-
-# Write Firebase service account JSON
-if [ -n "$FIREBASE_B64" ]; then
-  echo "$FIREBASE_B64" | base64 -d | sudo tee /opt/nandhas/secrets/firebase-service-account.json >/dev/null
-else
-  echo "{}" | sudo tee /opt/nandhas/secrets/firebase-service-account.json >/dev/null
-fi
-
-# Permissions: files readable by all (container runs as non-root appuser)
-sudo chmod 755 /opt/nandhas /opt/nandhas/secrets /opt/nandhas/uploads
-sudo chmod 644 /opt/nandhas/backend.env /opt/nandhas/secrets/firebase-service-account.json
-sudo chmod -R 777 /opt/nandhas/uploads
-
-# Authenticate to ECR and pull the new image
-aws ecr get-login-password --region "$REGION" | sudo docker login --username AWS --password-stdin "$REGISTRY"
-sudo docker pull "$IMAGE"
-
-# Stop and remove the old container if running
-sudo docker rm -f nandhas-backend 2>/dev/null || true
-
-# Start the new container
-CONTAINER_ID=$(sudo docker run -d --name nandhas-backend --restart unless-stopped \
-  --env-file /opt/nandhas/backend.env \
-  -p 8080:8080 \
-  -v /opt/nandhas/secrets:/opt/nandhas/secrets:ro \
-  -v /opt/nandhas/uploads:/app/uploads \
-  "$IMAGE")
-
-echo "Container started: $CONTAINER_ID"
-
-# Brief pause – if the JVM crashes at startup it will have exited by now
-sleep 10
-
-if ! sudo docker ps --format '{{.Names}}' | grep -q 'nandhas-backend'; then
-  echo "❌ Container exited immediately after start."
-  echo "--- Container state ---"
-  sudo docker inspect nandhas-backend \
-    --format='Status={{.State.Status}} ExitCode={{.State.ExitCode}} Error={{.State.Error}}' 2>/dev/null || true
-  echo "--- All containers ---"
-  sudo docker ps -a
-  echo "--- Container logs (last 200 lines) ---"
-  sudo docker logs --tail 200 "$CONTAINER_ID" 2>&1 || true
-  exit 1
-fi
-
-echo "Container is running. Waiting for Spring Boot to accept HTTP traffic on port 8080..."
-HEALTHY=0
-for i in $(seq 1 25); do
-  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:8080/api/products?page=0&size=1" || echo "000")
-  if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "403" ]; then
-    echo "✓ Backend API is responsive (HTTP $HTTP_CODE on attempt $i)"
-    HEALTHY=1
-    break
-  fi
-  echo "Attempt $i/25: HTTP $HTTP_CODE – waiting 5s..."
-  sleep 5
-done
-
-if [ "$HEALTHY" -ne 1 ]; then
-  echo "❌ Backend health check failed after 25 attempts."
-  echo "--- Container state ---"
-  sudo docker inspect nandhas-backend \
-    --format='Status={{.State.Status}} ExitCode={{.State.ExitCode}} Error={{.State.Error}}' 2>/dev/null || true
-  echo "--- Container logs (last 200 lines) ---"
-  sudo docker logs --tail 200 nandhas-backend 2>&1 || true
-  exit 1
-fi
-
-sudo docker image prune -af --filter "until=168h"
-echo "✓ Backend deployment completed successfully!"
-REMOTE_SCRIPT
+          cat <<'REMOTE_SCRIPT' | sed 's/^[ \t]*//' > /tmp/ssm-deploy.sh
+            set -euo pipefail
+            IMAGE="IMAGE_PLACEHOLDER"
+            REGISTRY="REGISTRY_PLACEHOLDER"
+            REGION="REGION_PLACEHOLDER"
+            ENV_B64="ENV_B64_PLACEHOLDER"
+            FIREBASE_B64="FIREBASE_B64_PLACEHOLDER"
+            
+            # Create directories
+            sudo mkdir -p /opt/nandhas/secrets /opt/nandhas/uploads
+            
+            # Write env file – decode from base64 so no secrets appear in process list
+            echo "$ENV_B64" | base64 -d | sudo tee /opt/nandhas/backend.env >/dev/null
+            
+            # Write Firebase service account JSON
+            if [ -n "$FIREBASE_B64" ]; then
+              echo "$FIREBASE_B64" | base64 -d | sudo tee /opt/nandhas/secrets/firebase-service-account.json >/dev/null
+            else
+              echo "{}" | sudo tee /opt/nandhas/secrets/firebase-service-account.json >/dev/null
+            fi
+            
+            # Permissions: files readable by all (container runs as non-root appuser)
+            sudo chmod 755 /opt/nandhas /opt/nandhas/secrets /opt/nandhas/uploads
+            sudo chmod 644 /opt/nandhas/backend.env /opt/nandhas/secrets/firebase-service-account.json
+            sudo chmod -R 777 /opt/nandhas/uploads
+            
+            # Authenticate to ECR and pull the new image
+            aws ecr get-login-password --region "$REGION" | sudo docker login --username AWS --password-stdin "$REGISTRY"
+            sudo docker pull "$IMAGE"
+            
+            # Stop and remove the old container if running
+            sudo docker rm -f nandhas-backend 2>/dev/null || true
+            
+            # Start the new container
+            CONTAINER_ID=$(sudo docker run -d --name nandhas-backend --restart unless-stopped \
+              --env-file /opt/nandhas/backend.env \
+              -p 8080:8080 \
+              -v /opt/nandhas/secrets:/opt/nandhas/secrets:ro \
+              -v /opt/nandhas/uploads:/app/uploads \
+              "$IMAGE")
+            
+            echo "Container started: $CONTAINER_ID"
+            
+            # Brief pause – if the JVM crashes at startup it will have exited by now
+            sleep 10
+            
+            if ! sudo docker ps --format '{{.Names}}' | grep -q 'nandhas-backend'; then
+              echo "❌ Container exited immediately after start."
+              echo "--- Container state ---"
+              sudo docker inspect nandhas-backend \
+                --format='Status={{.State.Status}} ExitCode={{.State.ExitCode}} Error={{.State.Error}}' 2>/dev/null || true
+              echo "--- All containers ---"
+              sudo docker ps -a
+              echo "--- Container logs (last 200 lines) ---"
+              sudo docker logs --tail 200 "$CONTAINER_ID" 2>&1 || true
+              exit 1
+            fi
+            
+            echo "Container is running. Waiting for Spring Boot to accept HTTP traffic on port 8080..."
+            HEALTHY=0
+            for i in $(seq 1 25); do
+              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:8080/api/products?page=0&size=1" || echo "000")
+              if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "403" ]; then
+                echo "✓ Backend API is responsive (HTTP $HTTP_CODE on attempt $i)"
+                HEALTHY=1
+                break
+              fi
+              echo "Attempt $i/25: HTTP $HTTP_CODE – waiting 5s..."
+              sleep 5
+            done
+            
+            if [ "$HEALTHY" -ne 1 ]; then
+              echo "❌ Backend health check failed after 25 attempts."
+              echo "--- Container state ---"
+              sudo docker inspect nandhas-backend \
+                --format='Status={{.State.Status}} ExitCode={{.State.ExitCode}} Error={{.State.Error}}' 2>/dev/null || true
+              echo "--- Container logs (last 200 lines) ---"
+              sudo docker logs --tail 200 nandhas-backend 2>&1 || true
+              exit 1
+            fi
+            
+            sudo docker image prune -af --filter "until=168h"
+            echo "✓ Backend deployment completed successfully!"
+          REMOTE_SCRIPT
 
           # Replace placeholders with real values
           REMOTE_SCRIPT_CONTENT=$(< /tmp/ssm-deploy.sh)
@@ -205,6 +205,7 @@ REMOTE_SCRIPT
 
           # Encode the final script as Base64 so SSM receives exact bytes
           # (avoids shell quoting issues with secrets inside the script body)
+
           SCRIPT_B64=$(base64 -w 0 /tmp/ssm-deploy.sh)
           COMMANDS=$(jq -n --arg script "$SCRIPT_B64" '[
             "echo \($script) | base64 -d > /tmp/nandhas-deploy.sh",
