@@ -5,6 +5,7 @@ import com.company.app.admin.AdminUser;
 import com.company.app.admin.AdminUserRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
@@ -20,6 +21,12 @@ public class DataSeeder implements CommandLineRunner {
     private final AdminUserRepository adminUserRepository;
     private final PasswordEncoder passwordEncoder;
 
+    @Value("${app.admin.default-email:admin@company.com}")
+    private String defaultAdminEmail;
+
+    @Value("${app.admin.default-password:admin123}")
+    private String defaultAdminPassword;
+
     @Override
     @Transactional
     public void run(String... args) {
@@ -33,8 +40,8 @@ public class DataSeeder implements CommandLineRunner {
     private void seedAdminUsers() {
         log.info("Seeding Default Admin Credentials...");
         AdminUser superAdmin = AdminUser.builder()
-                .email("admin@company.com")
-                .passwordHash(passwordEncoder.encode("admin123"))
+                .email(defaultAdminEmail)
+                .passwordHash(passwordEncoder.encode(defaultAdminPassword))
                 .fullName("Rajesh Sharma (Super Admin)")
                 .phone("+91 9876543210")
                 .role(AdminRole.ROLE_SUPER_ADMIN)

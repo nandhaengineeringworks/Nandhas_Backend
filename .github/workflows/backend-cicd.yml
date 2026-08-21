@@ -132,9 +132,11 @@ jobs:
           V_DB_NAME:    ${{ secrets.DB_NAME }}
           V_DB_USER:    ${{ secrets.DB_USERNAME }}
           V_DB_PASS:    ${{ secrets.DB_PASSWORD }}
-          V_S3_BUCKET:  ${{ secrets.AWS_S3_BUCKET }}
-          V_JWT:        ${{ secrets.JWT_SECRET }}
-          V_REGION:     ${{ secrets.AWS_REGION }}
+          V_S3_BUCKET:      ${{ secrets.AWS_S3_BUCKET }}
+          V_JWT:            ${{ secrets.JWT_SECRET }}
+          V_REGION:         ${{ secrets.AWS_REGION }}
+          V_ADMIN_EMAIL:    ${{ secrets.ADMIN_DEFAULT_EMAIL }}
+          V_ADMIN_PASSWORD: ${{ secrets.ADMIN_DEFAULT_PASSWORD }}
         run: |
           set -euo pipefail
           python3 .github/scripts/encode_env.py >> "$GITHUB_OUTPUT"

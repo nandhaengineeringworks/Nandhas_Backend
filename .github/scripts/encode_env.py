@@ -30,6 +30,8 @@ lines = [
     f"AWS_REGION={get('V_REGION')}",
     f"AWS_S3_BUCKET={get('V_S3_BUCKET')}",
     f"JWT_SECRET={get('V_JWT')}",
+    f"ADMIN_DEFAULT_EMAIL={get('V_ADMIN_EMAIL', 'admin@company.com')}",
+    f"ADMIN_DEFAULT_PASSWORD={get('V_ADMIN_PASSWORD', 'admin123')}",
     "FIREBASE_ENABLED=true",
     "GOOGLE_APPLICATION_CREDENTIALS=/opt/nandhas/secrets/firebase-service-account.json",
 ]
