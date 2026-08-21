@@ -1,0 +1,39 @@
+name: Import SQL Dump to RDS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  import-db:
+    name: Import Database
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install MySQL Client
+        run: sudo apt-get update && sudo apt-get install -y mysql-client
+
+      - name: Import SQL Dump
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_USERNAME: ${{ secrets.DB_USERNAME }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+        run: |
+          set -euo pipefail
+          
+          # Convert UTF-16 LE to UTF-8 if necessary
+          if file nandhas-rds-migration.sql | grep -qi "UTF-16"; then
+            echo "Converting UTF-16 to UTF-8..."
+            iconv -f UTF-16LE -t UTF-8 nandhas-rds-migration.sql > converted.sql
+            mv converted.sql nandhas-rds-migration.sql
+          fi
+
+          echo "Importing SQL to database ${DB_NAME} at ${DB_HOST}..."
+          mysql -h "${DB_HOST}" -P "${DB_PORT}" -u "${DB_USERNAME}" -p"${DB_PASSWORD}" "${DB_NAME}" < nandhas-rds-migration.sql
+          echo "Import completed successfully!"
