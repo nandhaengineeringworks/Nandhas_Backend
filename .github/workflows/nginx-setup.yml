@@ -26,12 +26,13 @@ jobs:
           
           SCRIPT=$(cat << 'EOF'
           #!/usr/bin/env bash
+          
+          # 1. Update Nginx Configuration to explicitly specify the server_name for Certbot
           cat << 'NGINX' | sudo tee /etc/nginx/conf.d/nandhas-api.conf
           server {
               listen 80;
-              server_name _;
+              server_name api.nandhas.in;
               
-              # Proxy all traffic to the Spring Boot backend
               location / {
                   proxy_pass http://127.0.0.1:8080;
                   proxy_http_version 1.1;
@@ -45,6 +46,16 @@ jobs:
           }
           NGINX
           sudo systemctl restart nginx
+          
+          # 2. Install Certbot on Amazon Linux 2023 via Python venv
+          sudo dnf install -y python3 augeas-libs
+          sudo python3 -m venv /opt/certbot/
+          sudo /opt/certbot/bin/pip install --upgrade pip
+          sudo /opt/certbot/bin/pip install certbot certbot-nginx
+          sudo ln -sf /opt/certbot/bin/certbot /usr/bin/certbot
+          
+          # 3. Run Certbot automatically
+          sudo certbot --nginx -d api.nandhas.in --non-interactive --agree-tos -m admin@nandhas.in --redirect
           EOF
           )
           
