@@ -34,9 +34,12 @@ jobs:
           UPDATE products SET primary_image_url = REPLACE(primary_image_url, 'http://localhost:8080', 'https://api.nandhas.in') WHERE primary_image_url LIKE '%localhost%';
           UPDATE product_images SET image_url = REPLACE(image_url, 'http://localhost:8080', 'https://api.nandhas.in') WHERE image_url LIKE '%localhost%';
           UPDATE banners SET image_url = REPLACE(image_url, 'http://localhost:8080', 'https://api.nandhas.in') WHERE image_url LIKE '%localhost%';
-          SELECT COUNT(*) as products_updated FROM products WHERE primary_image_url LIKE '%localhost%';
-          SELECT COUNT(*) as product_images_updated FROM product_images WHERE image_url LIKE '%localhost%';
-          SELECT COUNT(*) as banners_updated FROM banners WHERE image_url LIKE '%localhost%';
+          UPDATE products SET primary_image_url = CONCAT('https://api.nandhas.in', primary_image_url) WHERE primary_image_url LIKE '/uploads/%';
+          UPDATE product_images SET image_url = CONCAT('https://api.nandhas.in', image_url) WHERE image_url LIKE '/uploads/%';
+          UPDATE banners SET image_url = CONCAT('https://api.nandhas.in', image_url) WHERE image_url LIKE '/uploads/%';
+          SELECT COUNT(*) as remaining_localhost_products FROM products WHERE primary_image_url LIKE '%localhost%';
+          SELECT COUNT(*) as remaining_relative_products FROM products WHERE primary_image_url LIKE '/uploads/%';
+          SELECT COUNT(*) as sample_check FROM products WHERE primary_image_url LIKE 'https://api.nandhas.in%';
           "
 
           SQL_B64=$(echo "$SQL" | base64 -w 0)
