@@ -21,22 +21,26 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ secrets.AWS_REGION }}
 
-      - name: Upload SQL dump to S3
+      - name: Upload SQL dump to S3 and generate presigned URL
+        id: presign
         run: |
           echo "Uploading SQL dump to S3..."
           aws s3 cp nandhas-rds-migration.sql s3://${{ secrets.AWS_S3_BUCKET }}/nandhas-rds-migration.sql
-          echo "Upload complete."
+          echo "Generating presigned URL (valid 1 hour)..."
+          PRESIGNED_URL=$(aws s3 presign s3://${{ secrets.AWS_S3_BUCKET }}/nandhas-rds-migration.sql --expires-in 3600)
+          echo "presigned_url=${PRESIGNED_URL}" >> $GITHUB_OUTPUT
+          echo "Presigned URL generated."
 
       - name: Run import on EC2 via SSM + Docker
         run: |
           set -euo pipefail
 
+          PRESIGNED_URL="${{ steps.presign.outputs.presigned_url }}"
           DB_HOST="${{ secrets.DB_HOST }}"
           DB_PORT="${{ secrets.DB_PORT }}"
           DB_USERNAME="${{ secrets.DB_USERNAME }}"
           DB_PASSWORD="${{ secrets.DB_PASSWORD }}"
           DB_NAME="${{ secrets.DB_NAME }}"
-          S3_BUCKET="${{ secrets.AWS_S3_BUCKET }}"
           EC2_INSTANCE_ID="${{ secrets.EC2_INSTANCE_ID }}"
 
           # Write the remote shell script
@@ -44,8 +48,8 @@ jobs:
           #!/bin/bash
           set -euo pipefail
 
-          echo "=== Downloading SQL dump from S3 ==="
-          aws s3 cp "s3://${S3_BUCKET}/nandhas-rds-migration.sql" /tmp/nandhas-rds-migration.sql
+          echo "=== Downloading SQL dump via presigned URL ==="
+          curl -fSL "${PRESIGNED_URL}" -o /tmp/nandhas-rds-migration.sql
 
           echo "=== Converting encoding if needed ==="
           if file /tmp/nandhas-rds-migration.sql | grep -qi "UTF-16"; then
