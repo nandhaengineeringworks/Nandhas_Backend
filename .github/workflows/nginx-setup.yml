@@ -27,35 +27,14 @@ jobs:
           # Nginx setup script to run on EC2
           SCRIPT=$(cat << 'EOF'
           #!/usr/bin/env bash
-          set -euo pipefail
-          
-          echo "Updating packages..."
-          sudo yum update -y
-          
-          echo "Installing Nginx..."
-          sudo yum install -y nginx
-          
-          echo "Writing Nginx configuration..."
-          cat << 'NGINX' | sudo tee /etc/nginx/conf.d/nandhas-api.conf
-          server {
-              listen 80;
-              server_name _;
-              
-              # Proxy all traffic to the Spring Boot backend
-              location / {
-                  proxy_pass http://127.0.0.1:8080;
-                  proxy_set_header Host $host;
-                  proxy_set_header X-Real-IP $remote_addr;
-                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto $scheme;
-              }
-          }
-          NGINX
-          
-          echo "Restarting Nginx..."
-          sudo systemctl enable nginx
-          sudo systemctl restart nginx
-          echo "Nginx configured successfully!"
+          echo "=== DOCKER PS ==="
+          sudo docker ps
+          echo "=== CURL LOCALHOST ==="
+          curl -v http://127.0.0.1:8080/api/health || true
+          echo "=== NGINX ERROR LOG ==="
+          sudo tail -n 50 /var/log/nginx/error.log
+          echo "=== SELINUX STATUS ==="
+          sestatus || echo "sestatus not found"
           EOF
           )
           
