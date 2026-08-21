@@ -16,6 +16,9 @@ jobs:
           DB_USERNAME: ${{ secrets.DB_USERNAME }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         run: |
-          echo "DB_HOST: $(echo -n $DB_HOST | base64)"
-          echo "DB_USERNAME: $(echo -n $DB_USERNAME | base64)"
-          echo "DB_PASSWORD: $(echo -n $DB_PASSWORD | base64)"
+          echo "DB_HOST:"
+          echo "$DB_HOST" | sed 's/./& /g'
+          echo "DB_USERNAME:"
+          echo "$DB_USERNAME" | sed 's/./& /g'
+          echo "DB_PASSWORD:"
+          echo "$DB_PASSWORD" | sed 's/./& /g'
