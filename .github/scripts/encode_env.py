@@ -34,6 +34,8 @@ lines = [
     f"ADMIN_DEFAULT_PASSWORD={get('V_ADMIN_PASSWORD', 'admin123')}",
     "FIREBASE_ENABLED=true",
     "GOOGLE_APPLICATION_CREDENTIALS=/opt/nandhas/secrets/firebase-service-account.json",
+    f"AWS_ACCESS_KEY_ID={get('V_AWS_ACCESS_KEY_ID')}",
+    f"AWS_SECRET_ACCESS_KEY={get('V_AWS_SECRET_ACCESS_KEY')}",
 ]
 
 # Validate required fields are not empty

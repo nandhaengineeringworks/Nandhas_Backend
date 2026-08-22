@@ -26,6 +26,8 @@ app:
     s3:
       bucket-name: ${AWS_S3_BUCKET:nandhas-media-bucket}
       region: ${AWS_REGION:ap-south-2}
+      access-key: ${AWS_ACCESS_KEY_ID:}
+      secret-key: ${AWS_SECRET_ACCESS_KEY:}
       cloudfront-domain: ${AWS_CLOUDFRONT_DOMAIN:d123456abcdef8.cloudfront.net}
 
 logging:

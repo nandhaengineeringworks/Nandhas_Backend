@@ -137,6 +137,8 @@ jobs:
           V_REGION:         ${{ secrets.AWS_REGION }}
           V_ADMIN_EMAIL:    ${{ secrets.ADMIN_EMAIL }}
           V_ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          V_AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          V_AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
           set -euo pipefail
           python3 .github/scripts/encode_env.py >> "$GITHUB_OUTPUT"
