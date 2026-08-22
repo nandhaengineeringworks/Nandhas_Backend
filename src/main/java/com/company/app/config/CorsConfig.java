@@ -15,7 +15,14 @@ public class CorsConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOriginPatterns(List.of("*")); // Allows both local Vite dev servers and AWS domains
+        configuration.setAllowedOriginPatterns(List.of(
+                "https://nandhas.in",
+                "https://www.nandhas.in",
+                "https://admin.nandhas.in",
+                "https://api.nandhas.in",
+                "http://localhost:[*]",   // local dev (any port)
+                "http://127.0.0.1:[*]"   // local dev (any port)
+        ));
         configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(Arrays.asList("Authorization", "Content-Type", "X-Requested-With", "Accept", "Origin", "Access-Control-Request-Method", "Access-Control-Request-Headers"));
         configuration.setExposedHeaders(Arrays.asList("Access-Control-Allow-Origin", "Access-Control-Allow-Credentials", "Authorization"));
