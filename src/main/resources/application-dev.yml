@@ -18,6 +18,8 @@ spring:
         format_sql: false
 
 app:
+  storage:
+    base-url: http://localhost:8080/uploads
   firebase:
     enabled: true
     credentials-file: firebase-service-account.json

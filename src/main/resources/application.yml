@@ -25,7 +25,7 @@ app:
   storage:
     type: ${STORAGE_TYPE:local} # 'local' or 's3'
     local-dir: ./uploads
-    base-url: http://localhost:8080/uploads
+    base-url: ${APP_STORAGE_BASE_URL:https://api.nandhas.in/uploads}
   aws:
     s3:
       bucket-name: nandhas-media-bucket
