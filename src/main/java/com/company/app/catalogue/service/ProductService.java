@@ -39,10 +39,10 @@ public class ProductService {
     private final ProductVariantRepository productVariantRepository;
     private final EnquiryRepository enquiryRepository;
 
-    // Reject browser-local blob: URLs — these are session-scoped and must never be persisted
+    // Reject browser-local or temporary URLs — these must never be persisted
     private String sanitizeImageUrl(String url) {
-        if (url != null && url.startsWith("blob:")) {
-            return null;
+        if (url != null && (url.startsWith("blob:") || url.startsWith("data:") || url.startsWith("file:"))) {
+            throw new IllegalArgumentException("Temporary image URLs cannot be saved");
         }
         return url;
     }
