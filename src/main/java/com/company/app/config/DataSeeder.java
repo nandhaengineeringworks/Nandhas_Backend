@@ -66,6 +66,15 @@ public class DataSeeder implements CommandLineRunner {
                 .isActive(true)
                 .build();
 
-        adminUserRepository.saveAll(List.of(superAdmin, productManager, salesLead));
+        AdminUser companyAdmin = AdminUser.builder()
+                .email("admin@company.com")
+                .passwordHash(passwordEncoder.encode("admin123"))
+                .fullName("Admin User")
+                .phone("+91 9876543209")
+                .role(AdminRole.ROLE_SUPER_ADMIN)
+                .isActive(true)
+                .build();
+
+        adminUserRepository.saveAll(List.of(superAdmin, companyAdmin, productManager, salesLead));
     }
 }
