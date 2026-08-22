@@ -27,14 +27,14 @@ jobs:
           SCRIPT=$(cat << 'EOF'
           #!/usr/bin/env bash
           
+          # 0. Set global max upload size to prevent 413 errors on HTTPS
+          echo 'client_max_body_size 60M;' | sudo tee /etc/nginx/conf.d/upload-size.conf
+
           # 1. Update Nginx Configuration to explicitly specify the server_name for Certbot
           cat << 'NGINX' | sudo tee /etc/nginx/conf.d/nandhas-api.conf
           server {
               listen 80;
               server_name api.nandhas.in;
-
-              # Increase body size limit for media/file uploads (must match Spring's max-request-size)
-              client_max_body_size 60M;
 
               location / {
                   # Handle CORS preflight (OPTIONS) requests quickly without hitting Spring Boot
