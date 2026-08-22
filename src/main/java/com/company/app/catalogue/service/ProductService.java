@@ -39,6 +39,14 @@ public class ProductService {
     private final ProductVariantRepository productVariantRepository;
     private final EnquiryRepository enquiryRepository;
 
+    // Reject browser-local blob: URLs — these are session-scoped and must never be persisted
+    private String sanitizeImageUrl(String url) {
+        if (url != null && url.startsWith("blob:")) {
+            return null;
+        }
+        return url;
+    }
+
     @Transactional(readOnly = true)
     public PagedResponse<ProductSummaryDTO> getProducts(ProductFilterRequest filter) {
         Sort sort = Sort.by(Sort.Direction.ASC, "sortOrder").and(Sort.by(Sort.Direction.DESC, "id"));
@@ -242,7 +250,7 @@ public class ProductService {
                 .gstPercentage(dto.getGstPercentage() != null ? dto.getGstPercentage() : new BigDecimal("18.00"))
                 .isQuoteOnly(dto.getIsQuoteOnly() != null ? dto.getIsQuoteOnly() : true)
                 .brochureUrl(dto.getBrochureUrl())
-                .primaryImageUrl(dto.getPrimaryImageUrl())
+                .primaryImageUrl(sanitizeImageUrl(dto.getPrimaryImageUrl()))
                 .technicalDrawingUrl(dto.getTechnicalDrawingUrl())
                 .videoUrl(dto.getVideoUrl())
                 .view360Url(dto.getView360Url())
@@ -274,9 +282,11 @@ public class ProductService {
         if (dto.getImages() != null && !dto.getImages().isEmpty()) {
             int order = 0;
             for (ProductImageDTO imgDto : dto.getImages()) {
+                String imgUrl = sanitizeImageUrl(imgDto.getImageUrl());
+                if (imgUrl == null) continue; // skip blob: URLs
                 ProductImage image = ProductImage.builder()
                         .product(savedProduct)
-                        .imageUrl(imgDto.getImageUrl())
+                        .imageUrl(imgUrl)
                         .altText(imgDto.getAltText() != null ? imgDto.getAltText() : savedProduct.getName())
                         .sortOrder(imgDto.getSortOrder() != null ? imgDto.getSortOrder() : order++)
                         .isPrimary(Boolean.TRUE.equals(imgDto.getIsPrimary()))
@@ -358,7 +368,7 @@ public class ProductService {
         if (dto.getGstPercentage() != null) product.setGstPercentage(dto.getGstPercentage());
         if (dto.getIsQuoteOnly() != null) product.setIsQuoteOnly(dto.getIsQuoteOnly());
         product.setBrochureUrl(dto.getBrochureUrl());
-        product.setPrimaryImageUrl(dto.getPrimaryImageUrl());
+        product.setPrimaryImageUrl(sanitizeImageUrl(dto.getPrimaryImageUrl()));
         product.setTechnicalDrawingUrl(dto.getTechnicalDrawingUrl());
         product.setVideoUrl(dto.getVideoUrl());
         product.setView360Url(dto.getView360Url());
@@ -389,9 +399,11 @@ public class ProductService {
             product.getImages().clear();
             int order = 0;
             for (ProductImageDTO imgDto : dto.getImages()) {
+                String imgUrl = sanitizeImageUrl(imgDto.getImageUrl());
+                if (imgUrl == null) continue; // skip blob: URLs
                 ProductImage image = ProductImage.builder()
                         .product(product)
-                        .imageUrl(imgDto.getImageUrl())
+                        .imageUrl(imgUrl)
                         .altText(imgDto.getAltText() != null ? imgDto.getAltText() : product.getName())
                         .sortOrder(imgDto.getSortOrder() != null ? imgDto.getSortOrder() : order++)
                         .isPrimary(Boolean.TRUE.equals(imgDto.getIsPrimary()))
