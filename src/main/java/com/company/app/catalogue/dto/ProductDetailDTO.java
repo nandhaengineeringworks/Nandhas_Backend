@@ -2,6 +2,7 @@ package com.company.app.catalogue.dto;
 
 import com.company.app.catalogue.entity.CategoryType;
 import com.company.app.catalogue.entity.Product;
+import com.company.app.catalogue.entity.ProductImage;
 import com.company.app.catalogue.entity.ProductStatus;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -91,8 +92,21 @@ public class ProductDetailDTO {
         if (product == null) return null;
 
         String primaryImg = product.getPrimaryImageUrl();
-        if (primaryImg == null && product.getImages() != null && !product.getImages().isEmpty()) {
-            primaryImg = product.getImages().get(0).getImageUrl();
+        if (primaryImg != null && primaryImg.startsWith("blob:")) {
+            primaryImg = null;
+        }
+
+        if (primaryImg == null && product.getImages() != null) {
+            primaryImg = product.getImages().stream()
+                    .filter(img -> Boolean.TRUE.equals(img.getIsPrimary()))
+                    .map(ProductImage::getImageUrl)
+                    .filter(url -> url != null && !url.startsWith("blob:"))
+                    .findFirst()
+                    .orElseGet(() -> product.getImages().stream()
+                            .map(ProductImage::getImageUrl)
+                            .filter(url -> url != null && !url.startsWith("blob:"))
+                            .findFirst()
+                            .orElse(null));
         }
 
         return ProductDetailDTO.builder()
