@@ -106,7 +106,13 @@ aws ecr get-login-password --region "$REGION" | \
   sudo docker login --username AWS --password-stdin "$REGISTRY"
 echo "ECR login OK"
 
-# ── Pull the exact image built by CI ─────────────────────────────────────────
+# ── Free disk space before pulling new image ─────────────────────────────
+echo "Freeing disk space before pull..."
+sudo docker image prune -af --filter "until=24h" 2>/dev/null || true
+sudo docker container prune -f 2>/dev/null || true
+echo "Disk free: $(df -h / | awk 'NR==2{print $4}') available"
+
+# ── Pull the exact image built by CI ─────────────────────────────────────
 echo "Pulling: $IMAGE"
 sudo docker pull "$IMAGE"
 echo "Pull OK"
